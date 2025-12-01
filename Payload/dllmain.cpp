@@ -508,7 +508,7 @@ void MainThread() {
 
     UC::FMemory::Init((void*)(BaseAddress + 0x18f4350));
 
-    if (GetModuleHandleA("ProjectBoundarySteam-Win64-Shipping-Server.exe")) {
+    if (std::string(GetCommandLineA()).contains("-server")) {
         amServer = true;
     }
 
@@ -522,7 +522,7 @@ void MainThread() {
     if (amServer) {
         InitServerHooks();
 
-        UKismetSystemLibrary::ExecuteConsoleCommand(UWorld::GetWorld(), L"open Warehouse", nullptr); //
+        UKismetSystemLibrary::ExecuteConsoleCommand(UWorld::GetWorld(), L"open GangesRiver", nullptr); //
 
         Sleep(8 * 1000);
 
