@@ -73,6 +73,8 @@ struct ServerConfig {
     unsigned int Port;
     bool IsPvE;
     int MinPlayersToStart;
+    std::string ServerName;
+    std::string ServerRegion;
 };
 
 //Central server ip
@@ -166,8 +168,54 @@ void PressSpace()
     SendInput(1, &input, sizeof(INPUT));
 }
 
-void SendOnlineTestMessage(const std::string& backend)
+//Get PlayerCount helper
+int GetCurrentPlayerCount()
 {
+    UWorld* World = UWorld::GetWorld();
+    if (!World || !World->AuthorityGameMode)
+        return -1;
+
+    APBGameState* GS = (APBGameState*)World->AuthorityGameMode->GameState;
+    if (!GS)
+        return -1;
+
+    return GS->PlayerArray.Num();
+}
+
+nlohmann::json BuildServerStatusPayload()
+{
+    int playerCount = GetCurrentPlayerCount();
+
+    std::string map = std::string(Config.MapName.begin(), Config.MapName.end());
+    std::string mode = std::string(Config.FullModePath.begin(), Config.FullModePath.end());
+
+    std::string state;
+
+    APBGameState* GS = (APBGameState*)UWorld::GetWorld()->AuthorityGameMode->GameState;
+    if (GS)
+        state = GS->RoundState.ToString();
+    else
+        state = "Unknown";
+
+    nlohmann::json payload = {
+        { "name",         Config.ServerName },
+        { "region",       Config.ServerRegion },
+        { "mode",         mode },
+        { "map",          map },
+        { "port",         Config.Port },
+        { "playerCount",  playerCount },
+        { "serverState",  state }
+    };
+
+    return payload;
+}
+
+//Send Message to Backend HTTP Helper
+void SendServerStatus(const std::string& backend)
+{
+    nlohmann::json payload = BuildServerStatusPayload();
+    std::string body = payload.dump();
+
     size_t colon = backend.find(':');
     if (colon == std::string::npos)
     {
@@ -184,10 +232,7 @@ void SendOnlineTestMessage(const std::string& backend)
         WINHTTP_NO_PROXY_BYPASS, 0);
 
     if (!hSession)
-    {
-        std::cout << "[ONLINE] WinHttpOpen failed." << std::endl;
         return;
-    }
 
     std::wstring whost(host.begin(), host.end());
     INTERNET_PORT wport = (INTERNET_PORT)std::stoi(port);
@@ -195,7 +240,6 @@ void SendOnlineTestMessage(const std::string& backend)
     HINTERNET hConnect = WinHttpConnect(hSession, whost.c_str(), wport, 0);
     if (!hConnect)
     {
-        std::cout << "[ONLINE] WinHttpConnect failed." << std::endl;
         WinHttpCloseHandle(hSession);
         return;
     }
@@ -203,7 +247,7 @@ void SendOnlineTestMessage(const std::string& backend)
     HINTERNET hRequest = WinHttpOpenRequest(
         hConnect,
         L"POST",
-        L"/test",
+        L"/server/status",
         NULL,
         WINHTTP_NO_REFERER,
         WINHTTP_DEFAULT_ACCEPT_TYPES,
@@ -211,44 +255,30 @@ void SendOnlineTestMessage(const std::string& backend)
 
     if (!hRequest)
     {
-        std::cout << "[ONLINE] WinHttpOpenRequest failed." << std::endl;
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
         return;
     }
 
-    const char* body = "hello from dll";
-
     BOOL bResults = WinHttpSendRequest(
         hRequest,
-        WINHTTP_NO_ADDITIONAL_HEADERS,
-        0,
-        (LPVOID)body,
-        (DWORD)strlen(body),
-        (DWORD)strlen(body),
+        L"Content-Type: application/json",
+        -1,
+        (LPVOID)body.c_str(),
+        (DWORD)body.size(),
+        (DWORD)body.size(),
         0);
 
     if (bResults)
         WinHttpReceiveResponse(hRequest, NULL);
 
-    std::cout << "[ONLINE] Test message sent to backend." << std::endl;
-
     WinHttpCloseHandle(hRequest);
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
+
+    std::cout << "[ONLINE] Sent server status: " << body << std::endl;
 }
 
-void StartOnlineMessageThread()
-{
-    std::thread([]()
-        {
-            // Give server a moment to fully enter listening state
-            Sleep(1000);
-
-            SendOnlineTestMessage(OnlineBackendAddress);
-
-        }).detach();
-}
 // ======================================================
 //  SECTION 5 — UNREAL ENGINE HELPERS
 // ======================================================
@@ -828,7 +858,20 @@ void LoadConfig()
     {
         Config.Port = 7777;
     }
-
+    //Name
+    std::string serverNameArg = GetCmdValue("-servername=");
+    if (!serverNameArg.empty())
+    {
+        Config.ServerName = serverNameArg;
+        Log("[SERVER] Server name: " + serverNameArg);
+    }
+    //Region
+    std::string serverRegionArg = GetCmdValue("-serverregion=");
+    if (!serverRegionArg.empty())
+    {
+        Config.ServerRegion = serverRegionArg;
+        Log("[SERVER] Server region: " + serverRegionArg);
+    }
     // Min players (still used in TickFlush)
     Config.MinPlayersToStart = Config.IsPvE ? 1 : 2;
 
@@ -1061,12 +1104,19 @@ void MainThread()
             InitServerHooks();
             Log("[SERVER] Hooks installed.");
 
-            // Heartbeat thread
+            // Heartbeat thread (game + backend)
             std::thread([]() {
                 while (true)
                 {
-                    std::cout << "[HEARTBEAT]" << std::endl;
-                    Sleep(5000); // 5 seconds
+                    int pc = GetCurrentPlayerCount();
+                    std::cout << "[HEARTBEAT] PlayerCount = " << pc << std::endl;
+
+                    if (!OnlineBackendAddress.empty())
+                    {
+                        SendServerStatus(OnlineBackendAddress);
+                    }
+
+                    Sleep(5000);
                 }
                 }).detach();
 
@@ -1095,13 +1145,6 @@ void MainThread()
             Log("[SERVER] LibReplicate initialized.");
 
             StartServer();
-
-            if (!OnlineBackendAddress.empty())
-            {
-                std::cout << "[ONLINE] Starting online test thread..." << std::endl;
-                StartOnlineMessageThread();
-            }
-
         }
 
         else {

@@ -18,6 +18,14 @@ std::string CurrentMap = "Warehouse";
 std::string CurrentMode = "pve";
 std::string LastMap = "";
 std::string CurrentDifficulty = "normal";
+std::string OnlineBackend = "";
+std::string ServerName = "DefaultServer";
+std::string ServerRegion = "CN";
+
+bool OfflineMode = false;
+
+const std::string DEFAULT_BACKEND = "ax48735790k.vicp.fun:3000";
+
 std::atomic<bool> ServerRunning = false;
 int g_ConsecutiveFailures = 0;
 std::chrono::steady_clock::time_point g_LastFailureTime;
@@ -260,6 +268,33 @@ void InputThread()
             std::string diff = cmd.substr(11);
             SetDifficulty(diff);
         }
+        else if (cmd == "online")
+        {
+            OnlineBackend = DEFAULT_BACKEND;
+            OfflineMode = false;
+            LauncherLog("Online mode enabled. Backend = " + OnlineBackend);
+        }
+        else if (cmd.rfind("online ", 0) == 0)
+        {
+            OnlineBackend = cmd.substr(7);
+            OfflineMode = false;
+            LauncherLog("Online mode enabled. Backend = " + OnlineBackend);
+        }
+        else if (cmd == "offline")
+        {
+            OfflineMode = true;
+            LauncherLog("Offline mode enabled. Server will not contact backend.");
+        }
+        else if (cmd.rfind("servername ", 0) == 0)
+        {
+            ServerName = cmd.substr(11);
+            LauncherLog("Server name set to: " + ServerName);
+        }
+        else if (cmd.rfind("serverregion ", 0) == 0)
+        {
+            ServerRegion = cmd.substr(13);
+            LauncherLog("Server region set to: " + ServerRegion);
+        }
         else
         {
             LauncherLog("Unknown command.");
@@ -459,7 +494,21 @@ void LaunchServer()
         L"-map=" + std::wstring(CurrentMap.begin(), CurrentMap.end()) + L" "
         L"-mode=" + std::wstring(modePath.begin(), modePath.end()) + L" "
         L"-port=" + std::to_wstring(serverPort) + L" "
-        + (CurrentMode == "pve" ? L"-pve" : L"");
+        + (CurrentMode == "pve" ? L"-pve " : L"");
+
+    // Add server name
+    std::wstring wName(ServerName.begin(), ServerName.end());
+    cmd += L"-servername=" + wName + L" ";
+
+    // Add server region
+    std::wstring wRegion(ServerRegion.begin(), ServerRegion.end());
+    cmd += L"-serverregion=" + wRegion + L" ";
+    // Add Backend server
+    if (!OfflineMode && !OnlineBackend.empty())
+    {
+        std::wstring wOnline(OnlineBackend.begin(), OnlineBackend.end());
+        cmd += L"-online=" + wOnline + L" ";
+    }
 
     if (!CreateProcessW(
         NULL,
