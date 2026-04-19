@@ -63,6 +63,10 @@ static LibReplicate* libReplicate;
 bool listening = false;
 bool amServer = false;
 
+//Client logging to file
+bool ClientDebugLogEnabled = false;
+std::ofstream clientLogFile;
+
 struct ServerConfig {
     std::wstring MapName;
     std::wstring FullModePath;
@@ -133,6 +137,33 @@ UObject* GetLastOfType(UClass* theClass, bool includeDefault) {
     }
 
     return nullptr;
+}
+// Client log write
+void ClientLog(const std::string& msg)
+{
+    // Always print to console
+    std::cout << msg << std::endl;
+
+    // If debug logging enabled, write to file
+    if (ClientDebugLogEnabled && clientLogFile.is_open())
+    {
+        clientLogFile << msg << std::endl;
+        clientLogFile.flush();
+    }
+}
+
+//Force press space when autoconnect so it wont stuck to wait for player to press
+void PressSpace()
+{
+    INPUT input{};
+    input.type = INPUT_KEYBOARD;
+    input.ki.wVk = VK_SPACE;
+
+    SendInput(1, &input, sizeof(INPUT));
+
+    // Key up
+    input.ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(1, &input, sizeof(INPUT));
 }
 
 void SendOnlineTestMessage(const std::string& backend)
@@ -237,7 +268,7 @@ void EnableUnrealConsole() {
     UEngine::GetEngine()->GameViewport->ViewportConsole =
         static_cast<SDK::UConsole*>(NewObject);
 
-    std::cout << "[DEBUG] Unreal Console => F2" << std::endl;
+    ClientLog("[DEBUG] Unreal Console => F2");
 }
 
 void ConnectToMatch() {
@@ -590,13 +621,34 @@ void* OnFireWeapon(APBWeapon* Weapon) {
 SafetyHookInline ProcessEventClient;
 
 void ProcessEventHookClient(UObject* Object, UFunction* Function, void* Parms) {
+    //Froce space to login
+    if (Function->GetFullName().contains("UMG_EnterGame_C.Construct"))
+    {
+        ClientLog("[LOGIN] EnterGame Construct forcing SPACE");
+
+        std::thread([]()
+            {
+                Sleep(1000); // small delay so widget is fully active
+                PressSpace();
+            }).detach();
+    }
+    if (Function->GetFullName().contains("UMG_EnterGame_C.BP_OnActivated"))
+    {
+        ClientLog("[LOGIN] EnterGame Activated forcing SPACE");
+
+        std::thread([]()
+            {
+                Sleep(1000);
+                PressSpace();
+            }).detach();
+    }
     // Detect login complete via MainMenuBase Construct
     if (Function->GetFullName().contains("UMG_MainMenuBase_C.Construct"))
     {
         LoginCompleted = true;
     }
     if (Function->GetFullName().contains("OnConnectMatchServerTimeOut")) {
-        std::cout << "[PE] " << Object->GetFullName() << " - " << Function->GetFullName() << std::endl;
+        ClientLog("[PE] " + std::string(Object->GetFullName()) + " - " + std::string(Function->GetFullName()));
 
         ConnectToMatch();
     }
@@ -795,10 +847,16 @@ void LoadClientConfig()
     if (!matchArg.empty())
     {
         MatchIP = matchArg;
-        std::cout << "[CLIENT] Auto-match target: " << MatchIP << std::endl;
+        ClientLog("[CLIENT] Auto-match target: " + MatchIP);
     }
 
+    // NEW: debug log flag
+    if (std::string(GetCommandLineA()).find("-debuglog") != std::string::npos)
+    {
+        ClientDebugLogEnabled = true;
+    }
 }
+
 // ======================================================
 //  SECTION 13 — SERVER STARTUP AND COMMAND RELATED LOGIC
 // ======================================================
@@ -940,7 +998,7 @@ void AutoConnectToMatchFromCmdline()
 
             if (LP)
             {
-                std::cout << "[CLIENT] Auto-enter Shooting Range..." << std::endl;
+                ClientLog("[CLIENT] Auto-enter Shooting Range...");
                 LP->GoToRange(0.0f);
             }
 
@@ -957,7 +1015,7 @@ void AutoConnectToMatchFromCmdline()
 
             // Connect to match
             std::wstring wcmd = L"open " + std::wstring(MatchIP.begin(), MatchIP.end());
-            std::cout << "[CLIENT] Auto-connecting to match: " << MatchIP << std::endl;
+            ClientLog("[CLIENT] Auto-connecting to match: " + MatchIP);
 
             UKismetSystemLibrary::ExecuteConsoleCommand(
                 UWorld::GetWorld(),
@@ -974,7 +1032,7 @@ void AutoConnectToMatchFromCmdline()
 
 void MainThread()
 {
-    std::cout << "[BOOT] DLL injected, starting..." << std::endl;
+    ClientLog("[BOOT] DLL injected, starting...");
     try
     {
         //Calms down the ui font missing panic
@@ -1048,6 +1106,17 @@ void MainThread()
 
         else {
             //We're client
+            LoadClientConfig();
+            // Initialize client debug log
+            if (ClientDebugLogEnabled)
+            {
+                std::filesystem::create_directory("clientlogs");
+
+                std::string path = "clientlogs/clientlog-" + CurrentTimestamp() + ".txt";
+                clientLogFile.open(path, std::ios::app);
+
+                std::cout << "[CLIENT] Debug logging enabled: " << path << std::endl;
+            }
             InitDebugConsole();
             EnableUnrealConsole();
 
@@ -1060,7 +1129,6 @@ void MainThread()
             std::thread(HotkeyThread).detach();
 
             InitClientArmory();
-            LoadClientConfig();
             if (!MatchIP.empty())
             {
                 AutoConnectToMatchFromCmdline();
@@ -1320,9 +1388,9 @@ void HotkeyThread()
         if (GetAsyncKeyState(VK_F5) & 0x8000)
         {
             DebugDumpSubsystemsToFile();
-            std::cout << "=== F5 subsystem dump written to subsystems_dump.txt ===" << std::endl;
+            ClientLog("[CLIENT] Auto-enter Shooting Range...");
             DebugDumpWeaponPartsToFile();
-            std::cout << "=== F5 weaponparts dump written to weapon_parts_dump.txt ===" << std::endl;
+            ClientLog("[CLIENT] Auto-enter Shooting Range...");
             // simple debounce so it doesn't spam while held
             Sleep(300);
         }
@@ -1338,7 +1406,7 @@ void HotkeyThread()
                 LP = (UPBLocalPlayer*)GI->LocalPlayers[0];
                 if (LP)
                 {
-                    std::cout << "[CLIENT] Auto-enter Shooting Range..." << std::endl;
+                    ClientLog("[CLIENT] Auto-enter Shooting Range...");
                     LP->GoToRange(0.0f);
                 }
             }
