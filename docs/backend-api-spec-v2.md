@@ -26,10 +26,10 @@
 3. 后端向请求来源公网 IP 的指定 UDP 端口发送 `nonce`。
 4. GUI 收到 UDP `nonce` 后调 `POST /v1/host-probes/{probeId}/confirm`。
 5. GUI 调 `POST /v1/rooms` 创建房间，获得 `roomId` 和 `hostToken`。
-6. GUI 启动 host：`ProjectReboundServerWrapper.exe -online=<backend_host:port> -roomid=<roomId> -hosttoken=<hostToken> ...`
+6. GUI 先确保本地 fake login server 可达，再启动 host：`ProjectReboundServerWrapper.exe -online=<backend_host:port> -roomid=<roomId> -hosttoken=<hostToken> ...`
 7. Payload 优先发 `/v1/rooms/{roomId}/heartbeat`；旧 `/server/status` 带 `roomId/hostToken` 时也映射到房间心跳。
 8. 浏览器用 `GET /v1/rooms` 展示房间。
-9. 玩家加入时调 `POST /v1/rooms/{roomId}/join`，拿到 `connect: "ip:port"` 后启动客户端：`ProjectBoundarySteam-Win64-Shipping.exe -LogicServerURL=http://127.0.0.1:8000 -match=ip:port`。
+9. 玩家加入时调 `POST /v1/rooms/{roomId}/join`，拿到 `connect: "ip:port"` 后，GUI 会先按可用批处理流程启动本地 fake login server：`BoundaryMetaServer-main/index.js`，等待 `http://127.0.0.1:8000` 可达，再启动客户端：`ProjectBoundarySteam-Win64-Shipping.exe -LogicServerURL=http://127.0.0.1:8000 -match=ip:port -debuglog`。
 
 ## 3. 数据模型
 

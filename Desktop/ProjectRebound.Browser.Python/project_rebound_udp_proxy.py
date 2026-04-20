@@ -132,6 +132,10 @@ def run_host(args: argparse.Namespace) -> None:
     print(f"host proxy listening on UDP {args.public_port}, forwarding to {game_endpoint[0]}:{game_endpoint[1]}", flush=True)
     try:
         last_punch = 0.0
+        last_stats = time.time()
+        punch_rx = 0
+        game_rx = 0
+        game_tx = 0
         while True:
             now = time.time()
             if now - last_punch > 0.2:
@@ -142,9 +146,13 @@ def run_host(args: argparse.Namespace) -> None:
             try:
                 data, source = sock.recvfrom(65535)
             except socket.timeout:
+                if time.time() - last_stats > 5:
+                    print(f"host proxy stats: peers={len(peers)} punch_rx={punch_rx} game_from_peer={game_rx} game_to_peer={game_tx}", flush=True)
+                    last_stats = time.time()
                 continue
 
             if is_punch_packet(data):
+                punch_rx += 1
                 if source in peers:
                     last_peer = source
                 continue
@@ -154,10 +162,12 @@ def run_host(args: argparse.Namespace) -> None:
                 for target in targets:
                     if target:
                         sock.sendto(data, target)
+                        game_tx += 1
             else:
                 last_peer = source
                 peers.setdefault(source, Peer(source, "", ""))
                 sock.sendto(data, game_endpoint)
+                game_rx += 1
     finally:
         stop.set()
         sock.close()
@@ -186,6 +196,10 @@ def run_client(args: argparse.Namespace) -> None:
     print(f"client proxy listening on 127.0.0.1:{args.listen_port}, punching {ticket['hostEndpoint']}", flush=True)
 
     last_punch = 0.0
+    last_stats = time.time()
+    punch_rx = 0
+    game_from_local = 0
+    game_from_host = 0
     while True:
         now = time.time()
         if now - last_punch > 0.2:
@@ -195,17 +209,27 @@ def run_client(args: argparse.Namespace) -> None:
         try:
             data, source = sock.recvfrom(65535)
         except socket.timeout:
+            if time.time() - last_stats > 5:
+                print(
+                    f"client proxy stats: host={host_endpoint[0]}:{host_endpoint[1]} "
+                    f"punch_rx={punch_rx} game_from_local={game_from_local} game_from_host={game_from_host}",
+                    flush=True,
+                )
+                last_stats = time.time()
             continue
 
         if is_punch_packet(data):
             host_endpoint = source
+            punch_rx += 1
             continue
 
         if source[0] in {"127.0.0.1", "::1"} or source[0].startswith("127."):
             game_endpoint = source
             sock.sendto(data, host_endpoint)
+            game_from_local += 1
         elif game_endpoint is not None:
             sock.sendto(data, game_endpoint)
+            game_from_host += 1
 
 
 def main() -> None:

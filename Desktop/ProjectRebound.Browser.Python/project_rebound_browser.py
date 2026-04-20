@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import shutil
 import socket
 import subprocess
 import sys
@@ -18,6 +19,7 @@ from urllib import error, parse, request
 APP_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / "ProjectReboundBrowser"
 CONFIG_PATH = APP_DIR / "config-python.json"
 GUI_LOG_PATH = APP_DIR / "browser-launch.log"
+LAUNCH_DIR = APP_DIR / "launchers"
 
 
 @dataclass
@@ -149,6 +151,22 @@ def append_gui_log(message: str) -> None:
         file.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}\n")
 
 
+def quote_bat(value: str | Path) -> str:
+    return '"' + str(value).replace('"', '""') + '"'
+
+
+def write_batch(name: str, lines: list[str]) -> Path:
+    LAUNCH_DIR.mkdir(parents=True, exist_ok=True)
+    path = LAUNCH_DIR / name
+    path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
+    append_gui_log(f"Wrote launcher batch: {path}")
+    return path
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
 def find_file(root: str, file_name: str) -> str | None:
     if not root or not os.path.isdir(root):
         return None
@@ -157,8 +175,71 @@ def find_file(root: str, file_name: str) -> str | None:
         return str(direct)
     for path, _, files in os.walk(root):
         if file_name in files:
-            return str(Path(path) / file_name)
+                return str(Path(path) / file_name)
     return None
+
+
+def candidate_roots(root: str) -> list[Path]:
+    if not root or not os.path.isdir(root):
+        return []
+    start = Path(root).resolve()
+    roots: list[Path] = []
+    for path in [start, *list(start.parents)[:5]]:
+        if path not in roots:
+            roots.append(path)
+    return roots
+
+
+def find_file_near(root: str, file_name: str) -> str | None:
+    for base in candidate_roots(root):
+        direct = base / file_name
+        if direct.exists():
+            return str(direct)
+        nested_node = base / "nodejs" / file_name
+        if nested_node.exists():
+            return str(nested_node)
+    return find_file(root, file_name)
+
+
+def find_directory(root: str, directory_name: str) -> str | None:
+    if not root or not os.path.isdir(root):
+        return None
+    direct = Path(root) / directory_name
+    if direct.is_dir():
+        return str(direct)
+    for path, dirs, _ in os.walk(root):
+        if directory_name in dirs:
+            return str(Path(path) / directory_name)
+    return None
+
+
+def find_directory_near(root: str, directory_name: str) -> str | None:
+    for base in candidate_roots(root):
+        direct = base / directory_name
+        if direct.is_dir():
+            return str(direct)
+    return find_directory(root, directory_name)
+
+
+def logic_server_endpoint(logic_server_url: str) -> tuple[str, int] | None:
+    parsed = parse.urlparse(logic_server_url)
+    if not parsed.hostname:
+        return None
+    if parsed.port:
+        return parsed.hostname, parsed.port
+    return parsed.hostname, 443 if parsed.scheme == "https" else 80
+
+
+def is_local_host(host: str) -> bool:
+    return host.lower() in {"localhost", "127.0.0.1", "::1"}
+
+
+def is_tcp_open(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=0.5):
+            return True
+    except OSError:
+        return False
 
 
 def backend_for_game(backend_url: str) -> str:
@@ -172,6 +253,18 @@ def backend_for_game(backend_url: str) -> str:
 
 def sanitize_arg(value: str) -> str:
     return value.replace(" ", "_").replace("\t", "_")
+
+
+def game_exe_dir(game_directory: str) -> Path | None:
+    exe = find_file(game_directory, "ProjectBoundarySteam-Win64-Shipping.exe")
+    return Path(exe).parent if exe else None
+
+
+def latest_existing(paths: list[Path]) -> Path | None:
+    existing = [path for path in paths if path.exists()]
+    if not existing:
+        return None
+    return max(existing, key=lambda path: path.stat().st_mtime)
 
 
 class BrowserApp(tk.Tk):
@@ -468,13 +561,88 @@ class BrowserApp(tk.Tk):
         exe = find_file(self.config_data.game_directory, "ProjectBoundarySteam-Win64-Shipping.exe")
         if not exe:
             raise RuntimeError("ProjectBoundarySteam-Win64-Shipping.exe was not found under the game directory.")
-        args = [
-            exe,
-            f"-LogicServerURL={self.config_data.logic_server_url}",
-            f"-match={connect}",
+        self.ensure_payload_files(Path(exe).parent)
+        self.launch_client_via_batch(exe, connect)
+
+    def launch_client_via_batch(self, exe: str, connect: str) -> None:
+        backend_dir = find_directory_near(self.config_data.game_directory, "BoundaryMetaServer-main")
+        node = find_file_near(self.config_data.game_directory, "node.exe")
+        if not backend_dir or not node:
+            raise RuntimeError("nodejs/node.exe or BoundaryMetaServer-main was not found under the game directory.")
+
+        lines = [
+            "@echo off",
+            "title Project Rebound Client Launcher",
+            "echo [Launcher] Starting fake login server...",
         ]
-        append_gui_log("Launching client: " + subprocess.list2cmdline(args))
-        subprocess.Popen(args, cwd=str(Path(exe).parent), creationflags=self.client_creation_flags())
+        endpoint = logic_server_endpoint(self.config_data.logic_server_url)
+        if endpoint and is_local_host(endpoint[0]) and is_tcp_open(endpoint[0], endpoint[1]):
+            lines.append(f"echo [Launcher] Fake login server already reachable at {endpoint[0]}:{endpoint[1]}.")
+        else:
+            lines.extend([
+                f"start /B /D {quote_bat(backend_dir)} {quote_bat(node)} index.js",
+                "echo [Launcher] Waiting for login server to initialize...",
+                "timeout /t 5 >nul",
+            ])
+
+        lines.extend([
+            "if not exist " + quote_bat(Path(exe).parent / "dxgi.dll") + " echo [Launcher] WARNING: dxgi.dll is missing next to the game exe.",
+            "if not exist " + quote_bat(Path(exe).parent / "Payload.dll") + " echo [Launcher] WARNING: Payload.dll is missing next to the game exe.",
+            "echo [Launcher] Launching game client...",
+            (
+                f"start \"\" /D {quote_bat(Path(exe).parent)} {quote_bat(exe)} "
+                f"-LogicServerURL={self.config_data.logic_server_url} -match={connect} -debuglog"
+            ),
+            "echo.",
+            "echo [Launcher] Client launch requested.",
+            "echo This window can be closed after the game has started.",
+        ])
+
+        batch = write_batch("launch-client.bat", lines)
+        append_gui_log(f"Launching client batch: {batch}")
+        subprocess.Popen(["cmd.exe", "/c", str(batch)], creationflags=self.creation_flags())
+
+    def ensure_fake_login_server(self) -> None:
+        endpoint = logic_server_endpoint(self.config_data.logic_server_url)
+        if endpoint is None:
+            append_gui_log(f"Logic URL is not parseable, skipping fake login autostart: {self.config_data.logic_server_url}")
+            return
+
+        host, port = endpoint
+        if not is_local_host(host):
+            append_gui_log(f"Logic URL is not local, skipping fake login autostart: {self.config_data.logic_server_url}")
+            return
+
+        if is_tcp_open(host, port):
+            append_gui_log(f"Fake login server already reachable at {host}:{port}")
+            return
+
+        node = find_file_near(self.config_data.game_directory, "node.exe")
+        backend_dir = find_directory_near(self.config_data.game_directory, "BoundaryMetaServer-main")
+        if not node or not backend_dir:
+            raise RuntimeError(
+                "Local fake login server is not running, and nodejs/node.exe or "
+                "BoundaryMetaServer-main was not found under the game directory."
+            )
+
+        args = [node, "index.js"]
+        append_gui_log("Starting fake login server: " + subprocess.list2cmdline(args) + f" cwd={backend_dir}")
+        subprocess.Popen(
+            args,
+            cwd=backend_dir,
+            creationflags=self.login_server_creation_flags(),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        deadline = time.time() + 6
+        while time.time() < deadline:
+            if is_tcp_open(host, port):
+                append_gui_log(f"Fake login server is ready at {host}:{port}")
+                return
+            time.sleep(0.25)
+
+        raise RuntimeError(f"Fake login server did not become reachable at {host}:{port}.")
 
     def start_client_proxy(self, room_id: str, join_ticket: str) -> None:
         proxy = Path(__file__).with_name("project_rebound_udp_proxy.py")
@@ -497,30 +665,27 @@ class BrowserApp(tk.Tk):
         time.sleep(1)
 
     def start_host(self, room: dict, host_token: str) -> None:
-        wrapper = find_file(self.config_data.game_directory, "ProjectReboundServerWrapper.exe")
+        exe_dir = game_exe_dir(self.config_data.game_directory)
+        if exe_dir:
+            self.ensure_payload_files(exe_dir)
+        wrapper = str(exe_dir / "ProjectReboundServerWrapper.exe") if exe_dir and (exe_dir / "ProjectReboundServerWrapper.exe").exists() else find_file(self.config_data.game_directory, "ProjectReboundServerWrapper.exe")
         backend = backend_for_game(self.config_data.backend_url)
         game_port = self.config_data.port + 1 if self.config_data.use_udp_proxy else int(room.get("port", self.config_data.port))
-        if self.config_data.use_udp_proxy:
-            self.start_host_proxy(room["roomId"], host_token, game_port)
         if wrapper:
-            args = [
-                wrapper,
-                f"-online={backend}",
-                f"-roomid={room['roomId']}",
-                f"-hosttoken={host_token}",
-                f"-map={room.get('map', self.config_data.map_name)}",
-                f"-mode={room.get('mode', self.config_data.mode)}",
-                f"-servername={sanitize_arg(room.get('name', self.config_data.room_name))}",
-                f"-serverregion={room.get('region', self.config_data.region)}",
-                f"-port={game_port}",
-            ]
-            append_gui_log("Launching wrapper: " + subprocess.list2cmdline(args))
-            subprocess.Popen(args, cwd=str(Path(wrapper).parent), creationflags=self.creation_flags())
+            args = self.wrapper_args(wrapper, room, host_token, backend, game_port, exe_dir)
+            if self.config_data.use_udp_proxy:
+                self.launch_host_via_batch(args, room["roomId"], host_token, game_port, exe_dir or Path(wrapper).parent)
+                return
+            self.ensure_fake_login_server()
+            wrapper_cwd = str(exe_dir or Path(wrapper).parent)
+            append_gui_log("Launching wrapper: " + subprocess.list2cmdline(args) + f" cwd={wrapper_cwd}")
+            subprocess.Popen(args, cwd=wrapper_cwd, creationflags=self.creation_flags())
             return
 
         exe = find_file(self.config_data.game_directory, "ProjectBoundarySteam-Win64-Shipping.exe")
         if not exe:
             raise RuntimeError("Neither ProjectReboundServerWrapper.exe nor ProjectBoundarySteam-Win64-Shipping.exe was found.")
+        self.ensure_fake_login_server()
         args = [
             exe,
             "-log",
@@ -539,6 +704,119 @@ class BrowserApp(tk.Tk):
             args.append("-pve")
         append_gui_log("Launching server exe: " + subprocess.list2cmdline(args))
         subprocess.Popen(args, cwd=str(Path(exe).parent), creationflags=self.creation_flags())
+
+    def wrapper_args(self, wrapper: str, room: dict, host_token: str, backend: str, game_port: int, exe_dir: Path | None) -> list[str]:
+        args = [
+            wrapper,
+            f"-online={backend}",
+            f"-roomid={room['roomId']}",
+            f"-hosttoken={host_token}",
+            f"-map={room.get('map', self.config_data.map_name)}",
+            f"-mode={room.get('mode', self.config_data.mode)}",
+            f"-servername={sanitize_arg(room.get('name', self.config_data.room_name))}",
+            f"-serverregion={room.get('region', self.config_data.region)}",
+            f"-port={game_port}",
+        ]
+        if exe_dir:
+            args.append(f"-gameexe={exe_dir / 'ProjectBoundarySteam-Win64-Shipping.exe'}")
+        return args
+
+    def launch_host_via_batch(self, wrapper_args: list[str], room_id: str, host_token: str, game_port: int, wrapper_cwd: Path) -> None:
+        backend_dir = find_directory_near(self.config_data.game_directory, "BoundaryMetaServer-main")
+        node = find_file_near(self.config_data.game_directory, "node.exe")
+        if not backend_dir or not node:
+            raise RuntimeError("nodejs/node.exe or BoundaryMetaServer-main was not found under the game directory.")
+
+        proxy = Path(__file__).with_name("project_rebound_udp_proxy.py")
+        proxy_args = [
+            sys.executable,
+            str(proxy),
+            "host",
+            "--backend",
+            self.config_data.backend_url,
+            "--room-id",
+            room_id,
+            "--host-token",
+            host_token,
+            "--public-port",
+            str(self.config_data.port),
+            "--game-port",
+            str(game_port),
+        ]
+
+        game_exe = wrapper_cwd / "ProjectBoundarySteam-Win64-Shipping.exe"
+        wrapper_exe = wrapper_cwd / "ProjectReboundServerWrapper.exe"
+        wrapper_tail = subprocess.list2cmdline(wrapper_args[1:])
+
+        lines = [
+            "@echo off",
+            "title Project Rebound Host Launcher",
+            "pushd " + quote_bat(wrapper_cwd),
+            "echo [Launcher] Starting fake login server...",
+        ]
+        endpoint = logic_server_endpoint(self.config_data.logic_server_url)
+        if endpoint and is_local_host(endpoint[0]) and is_tcp_open(endpoint[0], endpoint[1]):
+            lines.append(f"echo [Launcher] Fake login server already reachable at {endpoint[0]}:{endpoint[1]}.")
+        else:
+            lines.extend([
+                f"start /B /D {quote_bat(backend_dir)} {quote_bat(node)} index.js",
+                "echo [Launcher] Waiting for login server to initialize...",
+                "timeout /t 5 >nul",
+            ])
+
+        lines.extend([
+            "if not exist dxgi.dll echo [Launcher] WARNING: dxgi.dll is missing next to the game exe.",
+            "if not exist Payload.dll echo [Launcher] WARNING: Payload.dll is missing next to the game exe.",
+            "echo [Launcher] Starting UDP proxy...",
+            "start \"Project Rebound Host UDP Proxy\" /MIN " + subprocess.list2cmdline(proxy_args),
+            "echo [Launcher] Waiting for proxy to initialize...",
+            "timeout /t 2 >nul",
+            "echo [Launcher] Starting dedicated server wrapper...",
+            "start \"\" /MIN " + quote_bat(wrapper_exe) + (" " + wrapper_tail if wrapper_tail else ""),
+            "echo [Launcher] Waiting for wrapper to initialize...",
+            "timeout /t 2 >nul",
+            "echo [Launcher] Launching game client...",
+            "start \"\" "
+            + quote_bat(game_exe)
+            + f" -LogicServerURL={self.config_data.logic_server_url} -match=127.0.0.1:{game_port} -debuglog",
+            "echo.",
+            "echo [Launcher] All systems running. DO NOT CLOSE THIS WINDOW.",
+            "echo Closing this window may shut down child consoles depending on Windows settings.",
+            "echo.",
+            "pause >nul",
+            "popd",
+        ])
+
+        batch = write_batch("launch-host.bat", lines)
+        append_gui_log(f"Launching host batch: {batch}")
+        subprocess.Popen(["cmd.exe", "/c", str(batch)], creationflags=self.creation_flags())
+
+    def ensure_payload_files(self, exe_dir: Path) -> None:
+        root = repo_root()
+        sources = {
+            "dxgi.dll": latest_existing([
+                root / "dxgi" / "x64" / "Release" / "dxgi.dll",
+                root / "dxgi" / "dxgi" / "x64" / "Release" / "dxgi.dll",
+            ]),
+            "Payload.dll": latest_existing([
+                root / "Payload" / "x64" / "Release" / "Payload.dll",
+                root / "Payload" / "Payload" / "x64" / "Release" / "Payload.dll",
+            ]),
+        }
+
+        missing = [name for name, source in sources.items() if source is None]
+        if missing:
+            raise RuntimeError("Built payload files were not found: " + ", ".join(missing))
+
+        for name, source in sources.items():
+            assert source is not None
+            target = exe_dir / name
+            should_copy = not target.exists() or source.stat().st_mtime > target.stat().st_mtime or source.stat().st_size != target.stat().st_size
+            if should_copy:
+                shutil.copy2(source, target)
+                append_gui_log(f"Copied {source} -> {target}")
+            else:
+                append_gui_log(f"Payload file already current: {target}")
 
     def start_host_proxy(self, room_id: str, host_token: str, game_port: int) -> None:
         proxy = Path(__file__).with_name("project_rebound_udp_proxy.py")
@@ -620,6 +898,10 @@ class BrowserApp(tk.Tk):
     @staticmethod
     def client_creation_flags() -> int:
         return 0
+
+    @staticmethod
+    def login_server_creation_flags() -> int:
+        return getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@ std::string ServerName = "DefaultServer";
 std::string ServerRegion = "CN";
 std::string HostRoomId = "";
 std::string HostToken = "";
+std::string GameExePath = ".\\ProjectBoundarySteam-Win64-Shipping.exe";
 int ServerPort = 7777;
 
 bool OfflineMode = false;
@@ -492,8 +493,9 @@ void LaunchServer()
     }
 
     // Build command line
+    std::wstring wGameExe(GameExePath.begin(), GameExePath.end());
     std::wstring cmd =
-        L".\\ProjectBoundarySteam-Win64-Shipping.exe "
+        L"\"" + wGameExe + L"\" "
         L"-log -server -nullrhi "
         L"-map=" + std::wstring(CurrentMap.begin(), CurrentMap.end()) + L" "
         L"-mode=" + std::wstring(modePath.begin(), modePath.end()) + L" "
@@ -538,7 +540,8 @@ void LaunchServer()
         &si,
         &pi))
     {
-        LauncherLog("Failed to launch server!");
+        LauncherLog("Failed to launch server! GetLastError=" + std::to_string(GetLastError()));
+        LauncherLog("Command line: " + std::string(cmd.begin(), cmd.end()));
         return;
     }
 
@@ -676,4 +679,8 @@ void LoadCommandLineConfig()
     std::string hostTokenArg = GetCmdValue("-hosttoken=");
     if (!hostTokenArg.empty())
         HostToken = hostTokenArg;
+
+    std::string gameExeArg = GetCmdValue("-gameexe=");
+    if (!gameExeArg.empty())
+        GameExePath = gameExeArg;
 }
