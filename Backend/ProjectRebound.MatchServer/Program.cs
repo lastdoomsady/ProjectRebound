@@ -30,7 +30,12 @@ using (var scope = app.Services.CreateScope())
     await db.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
 }
 
-app.MapGet("/health", () => Results.Ok(new { ok = true, service = "ProjectRebound.MatchServer" }));
+app.MapGet("/health", () => Results.Ok(new
+{
+    ok = true,
+    service = "ProjectRebound.MatchServer",
+    build = "join-reservation-sqlite-now-fix-20260421"
+}));
 
 app.MapPost("/v1/auth/guest", async (GuestAuthRequest request, MatchServerDbContext db) =>
 {
@@ -432,13 +437,14 @@ app.MapPost("/v1/rooms/{roomId:guid}/punch-tickets", async (
         return await EndpointHelpers.NotFoundRoomAsync(roomId, db);
     }
 
+    var now = DateTimeOffset.UtcNow;
     var joinTicketHash = TokenService.Hash(request.JoinTicket);
     var reservation = await db.RoomPlayers.AsNoTracking().FirstOrDefaultAsync(x =>
         x.RoomId == roomId &&
         x.PlayerId == player.PlayerId &&
         x.JoinTicketHash == joinTicketHash &&
         (x.Status == RoomPlayerStatus.Reserved || x.Status == RoomPlayerStatus.Joined) &&
-        x.ExpiresAt > DateTimeOffset.UtcNow, cancellationToken);
+        x.ExpiresAt > now, cancellationToken);
     if (reservation is null)
     {
         return Results.Json(new ApiError("JOIN_TICKET_REQUIRED", "A fresh join ticket is required before creating a punch ticket."), statusCode: 409);

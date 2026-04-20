@@ -2,14 +2,34 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import socket
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from urllib import error, parse, request
 
 
 MAGIC = "PRB_PUNCH_V1"
+LOG_PATH: Path | None = None
+
+
+def setup_log(role: str) -> None:
+    global LOG_PATH
+    app_dir = Path(os.environ.get("APPDATA", str(Path.home()))) / "ProjectReboundBrowser"
+    app_dir.mkdir(parents=True, exist_ok=True)
+    LOG_PATH = app_dir / f"udp-proxy-{role}.log"
+    LOG_PATH.write_text("", encoding="utf-8")
+
+
+def log(message: str) -> None:
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    line = f"{stamp} {message}"
+    print(line, flush=True)
+    if LOG_PATH is not None:
+        with LOG_PATH.open("a", encoding="utf-8") as file:
+            file.write(line + "\n")
 
 
 class ApiError(RuntimeError):
@@ -125,11 +145,11 @@ def run_host(args: argparse.Namespace) -> None:
                     endpoint = parse_endpoint(item["clientEndpoint"])
                     peers[endpoint] = Peer(endpoint, item["ticketId"], item["nonce"])
             except Exception as exc:
-                print(f"host proxy poll failed: {exc}", flush=True)
+                log(f"host proxy poll failed: {exc}")
             time.sleep(1)
 
     threading.Thread(target=poll, daemon=True).start()
-    print(f"host proxy listening on UDP {args.public_port}, forwarding to {game_endpoint[0]}:{game_endpoint[1]}", flush=True)
+    log(f"host proxy listening on UDP {args.public_port}, forwarding to {game_endpoint[0]}:{game_endpoint[1]}")
     try:
         last_punch = 0.0
         last_stats = time.time()
@@ -147,7 +167,7 @@ def run_host(args: argparse.Namespace) -> None:
                 data, source = sock.recvfrom(65535)
             except socket.timeout:
                 if time.time() - last_stats > 5:
-                    print(f"host proxy stats: peers={len(peers)} punch_rx={punch_rx} game_from_peer={game_rx} game_to_peer={game_tx}", flush=True)
+                    log(f"host proxy stats: peers={len(peers)} punch_rx={punch_rx} game_from_peer={game_rx} game_to_peer={game_tx}")
                     last_stats = time.time()
                 continue
 
@@ -193,7 +213,7 @@ def run_client(args: argparse.Namespace) -> None:
     ticket_id = ticket["ticketId"]
     game_endpoint: tuple[str, int] | None = None
     sock.settimeout(0.05)
-    print(f"client proxy listening on 127.0.0.1:{args.listen_port}, punching {ticket['hostEndpoint']}", flush=True)
+    log(f"client proxy listening on 127.0.0.1:{args.listen_port}, punching {ticket['hostEndpoint']}")
 
     last_punch = 0.0
     last_stats = time.time()
@@ -210,10 +230,9 @@ def run_client(args: argparse.Namespace) -> None:
             data, source = sock.recvfrom(65535)
         except socket.timeout:
             if time.time() - last_stats > 5:
-                print(
+                log(
                     f"client proxy stats: host={host_endpoint[0]}:{host_endpoint[1]} "
-                    f"punch_rx={punch_rx} game_from_local={game_from_local} game_from_host={game_from_host}",
-                    flush=True,
+                    f"punch_rx={punch_rx} game_from_local={game_from_local} game_from_host={game_from_host}"
                 )
                 last_stats = time.time()
             continue
@@ -251,6 +270,7 @@ def main() -> None:
     client.add_argument("--listen-port", type=int, required=True)
 
     args = parser.parse_args()
+    setup_log(args.mode)
     if args.mode == "host":
         run_host(args)
     else:

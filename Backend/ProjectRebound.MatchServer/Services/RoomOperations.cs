@@ -13,10 +13,11 @@ public static class RoomOperations
 
     public static async Task<int> ActiveReservationCountAsync(MatchServerDbContext db, Guid roomId)
     {
+        var now = DateTimeOffset.UtcNow;
         return await db.RoomPlayers.CountAsync(x =>
             x.RoomId == roomId &&
             (x.Status == RoomPlayerStatus.Reserved || x.Status == RoomPlayerStatus.Joined) &&
-            x.ExpiresAt > DateTimeOffset.UtcNow);
+            x.ExpiresAt > now);
     }
 
     public static async Task<(RoomPlayer Reservation, string JoinTicket)> ReserveJoinAsync(

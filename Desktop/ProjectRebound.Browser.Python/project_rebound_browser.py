@@ -87,6 +87,12 @@ class ApiClient:
             {"joinTicket": join_ticket, "bindingToken": binding_token, "clientLocalEndpoint": client_local_endpoint},
         )
 
+    def heartbeat_room(self, room_id: str, host_token: str, player_count: int, server_state: str) -> dict:
+        return self.post(
+            f"/v1/rooms/{room_id}/heartbeat",
+            {"hostToken": host_token, "playerCount": player_count, "serverState": server_state},
+        )
+
     def create_match_ticket(self, payload: dict) -> dict:
         return self.post("/v1/matchmaking/tickets", payload)
 
@@ -288,8 +294,11 @@ class BrowserApp(tk.Tk):
         self.ui_queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self.selected_room: dict | None = None
         self.rooms: list[dict] = []
+        self.host_heartbeat_stop: threading.Event | None = None
+        self.host_heartbeat_thread: threading.Thread | None = None
 
         self._build_ui()
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(100, self._drain_queue)
         self.run_background(self.initialize)
 
@@ -394,6 +403,10 @@ class BrowserApp(tk.Tk):
                 self.ui_queue.put(("error", str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def on_close(self) -> None:
+        self.stop_host_heartbeat()
+        self.destroy()
 
     def read_form(self) -> AppConfig:
         return AppConfig(
@@ -687,11 +700,13 @@ class BrowserApp(tk.Tk):
             args = self.wrapper_args(wrapper, room, host_token, backend, game_port, exe_dir)
             if self.config_data.use_udp_proxy:
                 self.launch_host_via_batch(args, room["roomId"], host_token, game_port, exe_dir or Path(wrapper).parent)
+                self.start_host_heartbeat(room, host_token)
                 return
             self.ensure_fake_login_server()
             wrapper_cwd = str(exe_dir or Path(wrapper).parent)
             append_gui_log("Launching wrapper: " + subprocess.list2cmdline(args) + f" cwd={wrapper_cwd}")
             subprocess.Popen(args, cwd=wrapper_cwd, creationflags=self.creation_flags())
+            self.start_host_heartbeat(room, host_token)
             return
 
         exe = find_file(self.config_data.game_directory, "ProjectBoundarySteam-Win64-Shipping.exe")
@@ -716,6 +731,47 @@ class BrowserApp(tk.Tk):
             args.append("-pve")
         append_gui_log("Launching server exe: " + subprocess.list2cmdline(args))
         subprocess.Popen(args, cwd=str(Path(exe).parent), creationflags=self.creation_flags())
+        self.start_host_heartbeat(room, host_token)
+
+    def stop_host_heartbeat(self) -> None:
+        if self.host_heartbeat_stop is not None:
+            self.host_heartbeat_stop.set()
+        self.host_heartbeat_stop = None
+        self.host_heartbeat_thread = None
+
+    def start_host_heartbeat(self, room: dict, host_token: str) -> None:
+        self.stop_host_heartbeat()
+
+        stop_event = threading.Event()
+        self.host_heartbeat_stop = stop_event
+        room_id = str(room["roomId"])
+        backend_url = self.config_data.backend_url
+        player_count = max(1, int(room.get("playerCount") or 1))
+
+        def worker() -> None:
+            api = ApiClient()
+            api.configure(backend_url, "")
+            append_gui_log(f"Starting GUI host heartbeat for room {room_id}")
+            success_logged = False
+            while not stop_event.is_set():
+                delay = 5
+                try:
+                    response = api.heartbeat_room(room_id, host_token, player_count, "Hosting")
+                    delay = int(response.get("nextHeartbeatSeconds", 5))
+                    if not success_logged:
+                        append_gui_log(f"GUI host heartbeat is active for room {room_id}")
+                        success_logged = True
+                except Exception as exc:
+                    append_gui_log(f"GUI host heartbeat failed for room {room_id}: {exc}")
+                    if "ROOM_ENDED" in str(exc) or "NOT_FOUND" in str(exc):
+                        break
+                delay = max(2, min(delay, 10))
+                stop_event.wait(delay)
+            append_gui_log(f"GUI host heartbeat stopped for room {room_id}")
+
+        thread = threading.Thread(target=worker, daemon=True)
+        self.host_heartbeat_thread = thread
+        thread.start()
 
     def wrapper_args(self, wrapper: str, room: dict, host_token: str, backend: str, game_port: int, exe_dir: Path | None) -> list[str]:
         args = [
