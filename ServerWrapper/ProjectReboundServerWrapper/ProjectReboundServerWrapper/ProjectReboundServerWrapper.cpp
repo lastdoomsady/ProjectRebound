@@ -14,17 +14,18 @@
 
 HANDLE g_ServerProcess = NULL;
 
+const std::string DEFAULT_BACKEND = "ax48735790k.vicp.fun:3000";
 std::string CurrentMap = "Warehouse";
-std::string CurrentMode = "pve";
+std::string CurrentMode = "pvp";
 std::string LastMap = "";
 std::string CurrentDifficulty = "normal";
-std::string OnlineBackend = "";
+std::string OnlineBackend = DEFAULT_BACKEND;
 std::string ServerName = "DefaultServer";
 std::string ServerRegion = "CN";
+int g_ServerPort = 7777;
+int g_ExternalPort = g_ServerPort;
 
 bool OfflineMode = false;
-
-const std::string DEFAULT_BACKEND = "ax48735790k.vicp.fun:3000";
 
 std::atomic<bool> ServerRunning = false;
 int g_ConsecutiveFailures = 0;
@@ -218,7 +219,7 @@ void RestartServer()
         MessageBoxA(NULL,
             "Server failed to start repeatedly.\n"
             "Possible reasons:\n"
-            "- Port 7777 is occupied by another program.\n"
+            "- Current port is occupied by another program.\n"
             "- Map file missing or corrupt.\n"
             "- Antivirus blocking the executable.\n\n"
             "Please check the logs and restart the launcher manually.",
@@ -294,6 +295,40 @@ void InputThread()
         {
             ServerRegion = cmd.substr(13);
             LauncherLog("Server region set to: " + ServerRegion);
+        }
+        else if (cmd.rfind("setport ", 0) == 0)
+        {
+            std::string portStr = cmd.substr(8);
+            try {
+                int newPort = std::stoi(portStr);
+                if (newPort < 1 || newPort > 65535) {
+                    LauncherLog("Invalid port. Must be 1–65535.");
+                }
+                else {
+                    g_ServerPort = newPort;
+                    LauncherLog("Server port set to: " + std::to_string(g_ServerPort));
+                }
+            }
+            catch (...) {
+                LauncherLog("Invalid port format.");
+            }
+        }
+        else if (cmd.rfind("setexternal ", 0) == 0)
+        {
+            std::string portStr = cmd.substr(12);
+            try {
+                int newPort = std::stoi(portStr);
+                if (newPort < 1 || newPort > 65535) {
+                    LauncherLog("Invalid external port. Must be 1–65535.");
+                }
+                else {
+                    g_ExternalPort = newPort;
+                    LauncherLog("External port set to: " + std::to_string(g_ExternalPort));
+                }
+            }
+            catch (...) {
+                LauncherLog("Invalid external port format.");
+            }
         }
         else
         {
@@ -385,7 +420,7 @@ BOOL WINAPI ConsoleHandler(DWORD ctrlType)
 void StartWatchdog()
 {
     std::thread([]() {
-        const auto timeout = std::chrono::seconds(10);
+        const auto timeout = std::chrono::seconds(60);
 
         while (ServerRunning)
         {
@@ -447,7 +482,7 @@ bool IsPortAvailable(int port, bool useTCP = false)
 
 void LaunchServer()
 {
-    int serverPort = 7777;
+    int serverPort = g_ServerPort;
     if (!IsPortAvailable(serverPort)) {
         LauncherLog("ERROR: UDP Port " + std::to_string(serverPort) + " is already in use!");
         return;
@@ -494,6 +529,7 @@ void LaunchServer()
         L"-map=" + std::wstring(CurrentMap.begin(), CurrentMap.end()) + L" "
         L"-mode=" + std::wstring(modePath.begin(), modePath.end()) + L" "
         L"-port=" + std::to_wstring(serverPort) + L" "
+        L"-external=" + std::to_wstring(g_ExternalPort) + L" "
         + (CurrentMode == "pve" ? L"-pve " : L"");
 
     // Add server name
@@ -571,8 +607,6 @@ void LaunchServer()
 
 int main()
 {
-    //set port, this part should belongs to a outside function later
-    int g_ServerPort = 7777;
     std::string cmdLine = GetCommandLineA();
     size_t pos = cmdLine.find("-port=");
     if (pos != std::string::npos) {
@@ -581,6 +615,8 @@ int main()
         std::string portStr = cmdLine.substr(pos, end - pos);
         g_ServerPort = std::stoi(portStr);
     }
+    // default external = server port
+    g_ExternalPort = g_ServerPort;
     lastHeartbeatTime = std::chrono::steady_clock::now();
     SetConsoleCtrlHandler(ConsoleHandler, TRUE);
 

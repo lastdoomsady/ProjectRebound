@@ -70,6 +70,7 @@ std::ofstream clientLogFile;
 struct ServerConfig {
     std::wstring MapName;
     std::wstring FullModePath;
+    unsigned int ExternalPort;
     unsigned int Port;
     bool IsPvE;
     int MinPlayersToStart;
@@ -204,7 +205,7 @@ nlohmann::json BuildServerStatusPayload()
         { "region",       Config.ServerRegion },
         { "mode",         mode },
         { "map",          map },
-        { "port",         Config.Port },
+        { "port",         Config.ExternalPort },
         { "playerCount",  playerCount },
         { "serverState",  state }
     };
@@ -653,6 +654,12 @@ void* OnFireWeapon(APBWeapon* Weapon) {
 SafetyHookInline ProcessEventClient;
 
 void ProcessEventHookClient(UObject* Object, UFunction* Function, void* Parms) {
+    // TEMP LOGIN DEBUG DUMP (GameInstance only)
+    //if (Object && Object->IsA(UPBGameInstance::StaticClass()))
+    //{
+    //    std::string fn = Function->GetFullName();
+    //        std::cout << "[LOGIN-DUMP] GI :: " << fn << std::endl;
+    //}
     //Froce space to login
     if (Function->GetFullName().contains("UMG_EnterGame_C.Construct"))
     {
@@ -860,6 +867,21 @@ void LoadConfig()
     {
         Config.Port = 7777;
     }
+
+    // External port
+    std::string externalArg = GetCmdValue("-external=");
+    if (!externalArg.empty())
+    {
+        Config.ExternalPort = std::stoi(externalArg);
+    }
+    else
+    {
+        Config.ExternalPort = Config.Port;  // default same as internal
+    }
+
+    Log("[SERVER] External port: " + std::to_string(Config.ExternalPort));
+
+
     //Name
     std::string serverNameArg = GetCmdValue("-servername=");
     if (!serverNameArg.empty())
