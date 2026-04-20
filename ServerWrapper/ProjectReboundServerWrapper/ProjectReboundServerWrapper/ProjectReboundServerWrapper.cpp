@@ -21,6 +21,9 @@ std::string CurrentDifficulty = "normal";
 std::string OnlineBackend = "";
 std::string ServerName = "DefaultServer";
 std::string ServerRegion = "CN";
+std::string HostRoomId = "";
+std::string HostToken = "";
+int ServerPort = 7777;
 
 bool OfflineMode = false;
 
@@ -35,6 +38,8 @@ const auto FAILURE_RESET_WINDOW = std::chrono::minutes(1);
 //Forward Declaration
 void LauncherLog(const std::string& msg);
 void LaunchServer();
+std::string GetCmdValue(const std::string& key);
+void LoadCommandLineConfig();
 
 std::chrono::steady_clock::time_point lastHeartbeatTime;
 
@@ -218,7 +223,7 @@ void RestartServer()
         MessageBoxA(NULL,
             "Server failed to start repeatedly.\n"
             "Possible reasons:\n"
-            "- Port 7777 is occupied by another program.\n"
+            "- The configured UDP port is occupied by another program.\n"
             "- Map file missing or corrupt.\n"
             "- Antivirus blocking the executable.\n\n"
             "Please check the logs and restart the launcher manually.",
@@ -447,9 +452,8 @@ bool IsPortAvailable(int port, bool useTCP = false)
 
 void LaunchServer()
 {
-    int serverPort = 7777;
-    if (!IsPortAvailable(serverPort)) {
-        LauncherLog("ERROR: UDP Port " + std::to_string(serverPort) + " is already in use!");
+    if (!IsPortAvailable(ServerPort)) {
+        LauncherLog("ERROR: UDP Port " + std::to_string(ServerPort) + " is already in use!");
         return;
     }
     LastMap = CurrentMap;
@@ -493,7 +497,7 @@ void LaunchServer()
         L"-log -server -nullrhi "
         L"-map=" + std::wstring(CurrentMap.begin(), CurrentMap.end()) + L" "
         L"-mode=" + std::wstring(modePath.begin(), modePath.end()) + L" "
-        L"-port=" + std::to_wstring(serverPort) + L" "
+        L"-port=" + std::to_wstring(ServerPort) + L" "
         + (CurrentMode == "pve" ? L"-pve " : L"");
 
     // Add server name
@@ -508,6 +512,18 @@ void LaunchServer()
     {
         std::wstring wOnline(OnlineBackend.begin(), OnlineBackend.end());
         cmd += L"-online=" + wOnline + L" ";
+    }
+
+    if (!HostRoomId.empty())
+    {
+        std::wstring wRoomId(HostRoomId.begin(), HostRoomId.end());
+        cmd += L"-roomid=" + wRoomId + L" ";
+    }
+
+    if (!HostToken.empty())
+    {
+        std::wstring wHostToken(HostToken.begin(), HostToken.end());
+        cmd += L"-hosttoken=" + wHostToken + L" ";
     }
 
     if (!CreateProcessW(
@@ -571,16 +587,6 @@ void LaunchServer()
 
 int main()
 {
-    //set port, this part should belongs to a outside function later
-    int g_ServerPort = 7777;
-    std::string cmdLine = GetCommandLineA();
-    size_t pos = cmdLine.find("-port=");
-    if (pos != std::string::npos) {
-        pos += 6;
-        size_t end = cmdLine.find(" ", pos);
-        std::string portStr = cmdLine.substr(pos, end - pos);
-        g_ServerPort = std::stoi(portStr);
-    }
     lastHeartbeatTime = std::chrono::steady_clock::now();
     SetConsoleCtrlHandler(ConsoleHandler, TRUE);
 
@@ -593,6 +599,7 @@ int main()
 
     LauncherLog("Logging to: " + logPath);
     LauncherLog("Wrapper started.");
+    LoadCommandLineConfig();
 
     // Start input thread (setmap, setmode, restart, killserver, etc.)
     std::thread(InputThread).detach();
@@ -605,4 +612,68 @@ int main()
     {
         Sleep(1000);
     }
+}
+
+std::string GetCmdValue(const std::string& key)
+{
+    std::string cmd = GetCommandLineA();
+    size_t pos = cmd.find(key);
+    if (pos == std::string::npos)
+        return "";
+
+    pos += key.length();
+    size_t end = cmd.find(" ", pos);
+    if (end == std::string::npos)
+        end = cmd.length();
+
+    return cmd.substr(pos, end - pos);
+}
+
+void LoadCommandLineConfig()
+{
+    std::string portArg = GetCmdValue("-port=");
+    if (!portArg.empty())
+        ServerPort = std::stoi(portArg);
+
+    std::string mapArg = GetCmdValue("-map=");
+    if (!mapArg.empty())
+        SetMap(mapArg);
+
+    std::string modeArg = GetCmdValue("-mode=");
+    if (!modeArg.empty())
+    {
+        if (modeArg.find("PVE") != std::string::npos || modeArg.find("pve") != std::string::npos)
+            SetMode("pve");
+        else if (modeArg.find("PVP") != std::string::npos || modeArg.find("pvp") != std::string::npos)
+            SetMode("pvp");
+        else
+            SetMode(modeArg);
+    }
+
+    std::string difficultyArg = GetCmdValue("-difficulty=");
+    if (!difficultyArg.empty())
+        SetDifficulty(difficultyArg);
+
+    std::string serverNameArg = GetCmdValue("-servername=");
+    if (!serverNameArg.empty())
+        ServerName = serverNameArg;
+
+    std::string serverRegionArg = GetCmdValue("-serverregion=");
+    if (!serverRegionArg.empty())
+        ServerRegion = serverRegionArg;
+
+    std::string onlineArg = GetCmdValue("-online=");
+    if (!onlineArg.empty())
+    {
+        OnlineBackend = onlineArg;
+        OfflineMode = false;
+    }
+
+    std::string roomIdArg = GetCmdValue("-roomid=");
+    if (!roomIdArg.empty())
+        HostRoomId = roomIdArg;
+
+    std::string hostTokenArg = GetCmdValue("-hosttoken=");
+    if (!hostTokenArg.empty())
+        HostToken = hostTokenArg;
 }
