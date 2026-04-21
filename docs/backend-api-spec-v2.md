@@ -9,6 +9,7 @@
 - 后端：`.NET 8 / ASP.NET Core Minimal API / EF Core SQLite`
 - 桌面浏览器 GUI：`Python 3.11 + tkinter` 快速原型，路径为 `Desktop/ProjectRebound.Browser.Python`
 - 保留的 WPF 原型：`Desktop/ProjectRebound.Browser`，不再作为当前主线
+- 已验证：A/B 两机通过 Python GUI 创建/加入游戏成功；P2P 不通时最小 UDP relay 可兜底。
 
 ## 1. 约定
 
@@ -30,6 +31,7 @@
 7. Payload 优先发 `/v1/rooms/{roomId}/heartbeat`；旧 `/server/status` 带 `roomId/hostToken` 时也映射到房间心跳。
 8. 浏览器用 `GET /v1/rooms` 展示房间。
 9. 玩家加入时调 `POST /v1/rooms/{roomId}/join`，拿到 `connect: "ip:port"` 后，GUI 会先按可用批处理流程启动本地 fake login server：`BoundaryMetaServer-main/index.js`，等待 `http://127.0.0.1:8000` 可达，再启动客户端：`ProjectBoundarySteam-Win64-Shipping.exe -LogicServerURL=http://127.0.0.1:8000 -match=ip:port -debuglog`。
+10. `Use UDP Proxy` 模式下，客户端实际连接本地 proxy：`-match=127.0.0.1:<Client Proxy>`；proxy 优先 P2P，失败后使用 `5002/udp` relay。
 
 ## 3. 数据模型
 

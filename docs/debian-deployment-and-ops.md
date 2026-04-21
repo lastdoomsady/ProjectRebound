@@ -327,6 +327,18 @@ curl -sS -X POST http://YOUR_DOMAIN_OR_SERVER_IP/server/status \
 
 ## 12. 真实联机验证
 
+当前已验证结果（2026-04-21）：
+
+- A 机 Python GUI 创建玩家主机房并进入游戏成功。
+- B 机 Python GUI 加入 A 机房间并进入游戏成功。
+- 实测环境中 P2P 打洞可能不通，但 UDP `5002` relay 兜底可成功。
+- `Tools\NatPunchTest --relay` 已验证 relay ping/pong：
+
+```text
+client relay registration accepted observed=...
+PASS: received pong sequence=1 from 43.240.193.246:5002 ...
+```
+
 准备两台 Windows 机器，最好不在同一局域网：
 
 - A：玩家主机。
@@ -382,7 +394,7 @@ B 机器：
 sudo journalctl -u projectrebound-matchserver -f
 ```
 
-如果 A 的创建房间卡在 UDP probe，优先检查 A 的公网 UDP 可达性，而不是 Linux 服务器。V1 没有 NAT 打洞或 Relay。
+如果 A 使用直连 probe 模式创建房间时卡在 UDP probe，优先检查 A 的公网 UDP 可达性和端口转发。当前推荐的 `Use UDP Proxy` 模式已经提供 NAT rendezvous，并可在 P2P 失败时用 UDP `5002` relay 兜底。
 
 ## 13. 日常应用更新
 

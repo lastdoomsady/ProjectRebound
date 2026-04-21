@@ -74,6 +74,13 @@ group. A passing run still ends with:
 PASS: received pong ...
 ```
 
+Verified example:
+
+```text
+client relay registration accepted observed=...
+PASS: received pong sequence=1 from 43.240.193.246:5002 ...
+```
+
 ## Expected failure meanings
 
 - `UDP rendezvous timed out`: UDP `5001` did not round-trip between the test

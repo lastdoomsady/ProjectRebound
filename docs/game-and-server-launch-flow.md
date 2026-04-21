@@ -4,6 +4,23 @@
 
 本文总结当前已经形成的 Windows GUI + Linux 骨干服务 + 玩家主机房间启动链路。目标是让 A 机创建主机房、A 自己进入战局、B 机通过房间浏览器加入，并在 P2P 打洞失败时自动使用最小 UDP relay 兜底。
 
+## 0. 当前验证状态
+
+截至 2026-04-21，以下链路已经实测成功：
+
+- Debian 后端返回 `build = udp-relay-fallback-20260421`。
+- `5001/udp` rendezvous 成功。
+- `5002/udp` relay 成功，`NatPunchTest --relay` 出现：
+
+```text
+client relay registration accepted observed=...
+PASS: received pong sequence=1 from 43.240.193.246:5002 ...
+```
+
+- A 机使用 Python GUI 创建房间并进入游戏。
+- B 机使用 Python GUI 加入房间并进入游戏。
+- 在 P2P 打洞不通时，client proxy 自动启用 relay fallback 后可加入游戏。
+
 ## 1. 组件职责
 
 - Linux 骨干服务：`Backend/ProjectRebound.MatchServer`
