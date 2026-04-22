@@ -22,6 +22,8 @@
 #include <thread>
 #include <vector>
 #include <functional>
+#include "json.hpp"
+using json = nlohmann::json;
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -48,8 +50,8 @@ std::string ServerName = "DefaultServer";
 std::string ServerRegion = "CN";
 int g_ServerPort = 7777;
 int g_ExternalPort = g_ServerPort;
-
 bool OfflineMode = false;
+bool UseDX11 = false;
 
 //Lifecycle Management
 std::mutex g_ServerMutex;
@@ -76,6 +78,9 @@ void RequestRestart(bool rotateMap, const std::string& reason);
 void PipeReader(HANDLE pipe, uint64_t generation);
 void StartWatchdog(HANDLE processHandle, uint64_t generation);
 void StartExitWatcher(HANDLE processHandle, uint64_t generation);
+
+void SaveConfigFile();
+bool LoadConfigFile();
 
 struct Command
 {
@@ -376,6 +381,18 @@ void InitCommands()
         }
         });
 
+    RegisterCommand("saveconfig", "Save current settings to serverconfig.json", [](const std::string& args) {
+        SaveConfigFile();
+        LauncherLog("Configuration saved.");
+        });
+
+    RegisterCommand("reloadconfig", "Reload settings from serverconfig.json", [](const std::string& args) {
+        if (LoadConfigFile())
+            LauncherLog("Configuration reloaded.");
+        else
+            LauncherLog("Failed to reload configuration.");
+        });
+
     RegisterCommand("status", "Show current server status", [](const std::string& args) {
         LauncherLog("=== Server Status ===");
         LauncherLog("Map: " + CurrentMap);
@@ -452,6 +469,88 @@ void LauncherLog(const std::string& msg)
     logFile << line << std::endl;
     logFile.flush();
     std::cout << line << std::endl;
+}
+
+// ======================================================
+//  CONFIG FILE LOADING AND SAVING
+// ======================================================
+
+bool LoadConfigFile()
+{
+    std::lock_guard<std::mutex> lock(g_ServerMutex);
+
+    const std::string path = "serverconfig.json";
+
+    if (!std::filesystem::exists(path))
+        return false;
+
+    std::ifstream f(path);
+    if (!f.is_open())
+        return false;
+
+    json j;
+    try {
+        f >> j;
+    }
+    catch (...) {
+        LauncherLog("Config file exists but is invalid JSON.");
+        return false;
+    }
+
+    if (j.contains("map") && j["map"].is_string())
+        CurrentMap = j["map"];
+
+    if (j.contains("mode") && j["mode"].is_string())
+        CurrentMode = j["mode"];
+
+    if (j.contains("difficulty") && j["difficulty"].is_string())
+        CurrentDifficulty = j["difficulty"];
+
+    if (j.contains("serverName") && j["serverName"].is_string())
+        ServerName = j["serverName"];
+
+    if (j.contains("serverRegion") && j["serverRegion"].is_string())
+        ServerRegion = j["serverRegion"];
+
+    if (j.contains("port") && j["port"].is_number_integer())
+        g_ServerPort = j["port"];
+
+    if (j.contains("externalPort") && j["externalPort"].is_number_integer())
+        g_ExternalPort = j["externalPort"];
+
+    if (j.contains("backend") && j["backend"].is_string())
+        OnlineBackend = j["backend"];
+
+    if (j.contains("offline") && j["offline"].is_boolean())
+        OfflineMode = j["offline"];
+
+    if (j.contains("dx11") && j["dx11"].is_boolean())
+        UseDX11 = j["dx11"];
+
+    LauncherLog("Loaded configuration from serverconfig.json");
+    return true;
+}
+
+void SaveConfigFile()
+{
+    std::lock_guard<std::mutex> lock(g_ServerMutex);
+
+    json j;
+    j["map"] = CurrentMap;
+    j["mode"] = CurrentMode;
+    j["difficulty"] = CurrentDifficulty;
+    j["serverName"] = ServerName;
+    j["serverRegion"] = ServerRegion;
+    j["port"] = g_ServerPort;
+    j["externalPort"] = g_ExternalPort;
+    j["backend"] = OnlineBackend;
+    j["offline"] = OfflineMode;
+    j["dx11"] = UseDX11;
+
+    std::ofstream f("serverconfig.json");
+    f << j.dump(4);
+
+    LauncherLog("Saved configuration to serverconfig.json");
 }
 
 
@@ -798,6 +897,9 @@ bool LaunchServerLocked()
         L"-external=" + std::to_wstring(g_ExternalPort) + L" "
         + (CurrentMode == "pve" ? L"-pve " : L"");
 
+    if (UseDX11)
+        cmd += L"-dx11 ";
+
     std::wstring wName(ServerName.begin(), ServerName.end());
     cmd += L"-servername=" + wName + L" ";
 
@@ -891,6 +993,12 @@ int main()
 
     LauncherLog("Logging to: " + logPath);
     LauncherLog("Wrapper started.");
+
+    if (!LoadConfigFile())
+    {
+        LauncherLog("No config found. Creating default serverconfig.json...");
+        SaveConfigFile();
+    }
 
     InitCommands();
     std::thread(InputThread).detach();
