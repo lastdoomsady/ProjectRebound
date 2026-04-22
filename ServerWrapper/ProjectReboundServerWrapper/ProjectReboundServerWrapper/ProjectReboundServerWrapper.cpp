@@ -1,4 +1,8 @@
-﻿#define NOMINMAX
+﻿// ======================================================
+//  INCLUDES AND GLOBALS
+// ======================================================
+
+#define NOMINMAX
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -17,6 +21,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <functional>
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -32,6 +37,7 @@ enum class ServerState
 HANDLE g_ServerProcess = NULL;
 DWORD g_ServerPid = 0;
 
+//Config constants
 const std::string DEFAULT_BACKEND = "ax48735790k.vicp.fun:3000";
 std::string CurrentMap = "Warehouse";
 std::string CurrentMode = "pvp";
@@ -45,15 +51,12 @@ int g_ExternalPort = g_ServerPort;
 
 bool OfflineMode = false;
 
-// Serializes all lifecycle transitions so input commands and background
-// watcher threads cannot restart/kill/start the process at the same time.
+//Lifecycle Management
 std::mutex g_ServerMutex;
 std::mutex g_LogMutex;
 std::atomic<bool> ServerRunning = false;
 std::atomic<bool> g_WrapperShuttingDown = false;
 std::atomic<ServerState> g_ServerState{ ServerState::Stopped };
-// Each launched process gets a generation number. Background threads only act
-// if their captured generation still matches the current server instance.
 std::atomic<uint64_t> g_ServerGeneration{ 0 };
 std::atomic<int> g_ConsecutiveFailures{ 0 };
 std::atomic<uint64_t> g_LastHeartbeatTickMs{ 0 };
@@ -62,7 +65,6 @@ std::chrono::steady_clock::time_point g_LastFailureTime;
 const int MAX_FAILURES = 3;
 const auto FAILURE_RESET_WINDOW = std::chrono::minutes(1);
 
-//Forward Declaration
 void LauncherLog(const std::string& msg);
 void LaunchServer();
 void RestartServer();
@@ -74,6 +76,26 @@ void RequestRestart(bool rotateMap, const std::string& reason);
 void PipeReader(HANDLE pipe, uint64_t generation);
 void StartWatchdog(HANDLE processHandle, uint64_t generation);
 void StartExitWatcher(HANDLE processHandle, uint64_t generation);
+
+struct Command
+{
+    std::string name;
+    std::string help;
+    std::function<void(const std::string& args)> handler;
+};
+
+std::vector<Command> g_Commands;
+
+void RegisterCommand(const std::string& name,
+    const std::string& help,
+    std::function<void(const std::string&)> handler)
+{
+    g_Commands.push_back({ name, help, handler });
+}
+
+// ======================================================
+//  UTILITY FUNCTIONS
+// ======================================================
 
 uint64_t SteadyNowMs()
 {
@@ -128,7 +150,11 @@ std::string CurrentTimestamp()
 
 std::ofstream logFile;
 
-//Set the maplist for PVP and PVE
+
+// ======================================================
+//  MAP LISTS AND MAP LOGIC
+// ======================================================
+
 std::vector<std::string> Maps = {
     "CircularX", "DataCenter", "Dusty", "GangesRiver", "Oriolus",
     "RelayStation", "Warehouse", "MiniFarm", "Museum", "OSS"
@@ -161,7 +187,6 @@ std::string PickRandomMapAvoidingLast()
 {
     std::vector<std::string> candidates;
 
-    // Build list of allowed maps (no PVEbug)
     for (const auto& m : MapList)
     {
         if (!m.pveBug && m.name != LastMap)
@@ -169,10 +194,7 @@ std::string PickRandomMapAvoidingLast()
     }
 
     if (candidates.empty())
-    {
-        // fallback: if everything is forbidden or only 1 map exists
         return LastMap;
-    }
 
     static std::mt19937 rng(std::random_device{}());
     std::uniform_int_distribution<> dist(0, candidates.size() - 1);
@@ -180,7 +202,6 @@ std::string PickRandomMapAvoidingLast()
     return candidates[dist(rng)];
 }
 
-//Console commands
 void PrintMapList()
 {
     LauncherLog("=== Available Maps ===");
@@ -195,6 +216,11 @@ void PrintMapList()
 
     LauncherLog("======================");
 }
+
+
+// ======================================================
+//  CONFIGURATION COMMANDS
+// ======================================================
 
 void SetMap(const std::string& name)
 {
@@ -264,6 +290,175 @@ void SetDifficulty(const std::string& diff)
     }
 }
 
+void InitCommands()
+{
+    RegisterCommand("maplist", "Show all maps", [](const std::string& args) {
+        PrintMapList();
+        });
+
+    RegisterCommand("setmap", "setmap <name>", [](const std::string& args) {
+        SetMap(args);
+        });
+
+    RegisterCommand("setmode", "setmode <pvp|pve>", [](const std::string& args) {
+        SetMode(args);
+        });
+
+    RegisterCommand("difficulty", "difficulty <easy|normal|hard>", [](const std::string& args) {
+        SetDifficulty(args);
+        });
+
+    RegisterCommand("killserver", "Kill the running server", [](const std::string& args) {
+        KillServer();
+        });
+
+    RegisterCommand("restart", "Restart the server", [](const std::string& args) {
+        RestartServer();
+        });
+
+    RegisterCommand("online", "online [backend]", [](const std::string& args) {
+        std::lock_guard<std::mutex> lock(g_ServerMutex);
+        if (args.empty())
+            OnlineBackend = DEFAULT_BACKEND;
+        else
+            OnlineBackend = args;
+        OfflineMode = false;
+        LauncherLog("Online mode enabled. Backend = " + OnlineBackend);
+        });
+
+    RegisterCommand("offline", "Disable backend", [](const std::string& args) {
+        std::lock_guard<std::mutex> lock(g_ServerMutex);
+        OfflineMode = true;
+        LauncherLog("Offline mode enabled.");
+        });
+
+    RegisterCommand("servername", "servername <name>", [](const std::string& args) {
+        std::lock_guard<std::mutex> lock(g_ServerMutex);
+        ServerName = args;
+        LauncherLog("Server name set to: " + ServerName);
+        });
+
+    RegisterCommand("serverregion", "serverregion <region>", [](const std::string& args) {
+        std::lock_guard<std::mutex> lock(g_ServerMutex);
+        ServerRegion = args;
+        LauncherLog("Server region set to: " + ServerRegion);
+        });
+
+    RegisterCommand("setport", "setport <1-65535>", [](const std::string& args) {
+        try {
+            int p = std::stoi(args);
+            if (p < 1 || p > 65535)
+                LauncherLog("Invalid port.");
+            else {
+                std::lock_guard<std::mutex> lock(g_ServerMutex);
+                g_ServerPort = p;
+                LauncherLog("Server port set to: " + std::to_string(p));
+            }
+        }
+        catch (...) {
+            LauncherLog("Invalid port format.");
+        }
+        });
+
+    RegisterCommand("setexternal", "setexternal <1-65535>", [](const std::string& args) {
+        try {
+            int p = std::stoi(args);
+            if (p < 1 || p > 65535)
+                LauncherLog("Invalid external port.");
+            else {
+                std::lock_guard<std::mutex> lock(g_ServerMutex);
+                g_ExternalPort = p;
+                LauncherLog("External port set to: " + std::to_string(p));
+            }
+        }
+        catch (...) {
+            LauncherLog("Invalid external port format.");
+        }
+        });
+
+    RegisterCommand("status", "Show current server status", [](const std::string& args) {
+        LauncherLog("=== Server Status ===");
+        LauncherLog("Map: " + CurrentMap);
+        LauncherLog("Mode: " + CurrentMode);
+        LauncherLog("Difficulty: " + CurrentDifficulty);
+        LauncherLog("Server Name: " + ServerName);
+        LauncherLog("Region: " + ServerRegion);
+        LauncherLog("Port: " + std::to_string(g_ServerPort));
+        LauncherLog("External Port: " + std::to_string(g_ExternalPort));
+        LauncherLog("Backend: " + (OfflineMode ? "Offline" : OnlineBackend));
+        LauncherLog("State: " + std::string(
+            g_ServerState.load() == ServerState::Running ? "Running" :
+            g_ServerState.load() == ServerState::Starting ? "Starting" :
+            g_ServerState.load() == ServerState::Stopping ? "Stopping" :
+            g_ServerState.load() == ServerState::Restarting ? "Restarting" :
+            "Stopped"
+        ));
+        });
+
+    RegisterCommand("help", "Show all commands", [](const std::string& args) {
+        LauncherLog("Available commands:");
+        for (auto& c : g_Commands)
+            std::cout << "  " << c.name << " - " << c.help << std::endl;
+        });
+}
+void InputThread()
+{
+    while (true)
+    {
+        std::string line;
+        std::getline(std::cin, line);
+
+        if (line.empty())
+            continue;
+
+        std::string cmd, args;
+        size_t space = line.find(' ');
+        if (space == std::string::npos)
+        {
+            cmd = line;
+            args = "";
+        }
+        else
+        {
+            cmd = line.substr(0, space);
+            args = line.substr(space + 1);
+        }
+
+        bool found = false;
+        for (auto& c : g_Commands)
+        {
+            if (c.name == cmd)
+            {
+                c.handler(args);
+                found = true;
+                break;
+            }
+        }
+
+        if (!found)
+            LauncherLog("Unknown command. Type 'help' for list.");
+    }
+}
+
+// ======================================================
+//  LOGGING SYSTEM
+// ======================================================
+
+void LauncherLog(const std::string& msg)
+{
+    std::string line = "[Launcher] " + msg;
+    std::lock_guard<std::mutex> lock(g_LogMutex);
+
+    logFile << line << std::endl;
+    logFile.flush();
+    std::cout << line << std::endl;
+}
+
+
+// ======================================================
+//  SERVER LIFECYCLE
+// ======================================================
+
 bool StopServerLocked()
 {
     if (!g_ServerProcess)
@@ -278,8 +473,6 @@ bool StopServerLocked()
     g_ServerState.store(ServerState::Stopping);
     ServerRunning.store(false);
 
-    // Retire the current instance before we touch the process so older watcher
-    // threads cannot restart or inspect a server that is already being replaced.
     g_ServerGeneration.fetch_add(1);
 
     HANDLE process = g_ServerProcess;
@@ -377,129 +570,10 @@ void RequestRestart(bool rotateMap, const std::string& reason)
         LauncherLog("ERROR: restart failed.");
 }
 
-void InputThread()
-{
-    while (true)
-    {
-        std::string cmd;
-        std::getline(std::cin, cmd);
 
-        if (cmd == "maplist")
-        {
-            PrintMapList();
-        }
-        else if (cmd.rfind("setmap ", 0) == 0)
-        {
-            SetMap(cmd.substr(7));
-        }
-        else if (cmd.rfind("setmode ", 0) == 0)
-        {
-            SetMode(cmd.substr(8));
-        }
-        else if (cmd == "killserver")
-        {
-            KillServer();
-        }
-        else if (cmd == "restart")
-        {
-            RestartServer();
-        }
-        else if (cmd.rfind("difficulty ", 0) == 0)
-        {
-            SetDifficulty(cmd.substr(11));
-        }
-        else if (cmd == "online")
-        {
-            std::lock_guard<std::mutex> lock(g_ServerMutex);
-            OnlineBackend = DEFAULT_BACKEND;
-            OfflineMode = false;
-            LauncherLog("Online mode enabled. Backend = " + OnlineBackend);
-        }
-        else if (cmd.rfind("online ", 0) == 0)
-        {
-            std::lock_guard<std::mutex> lock(g_ServerMutex);
-            OnlineBackend = cmd.substr(7);
-            OfflineMode = false;
-            LauncherLog("Online mode enabled. Backend = " + OnlineBackend);
-        }
-        else if (cmd == "offline")
-        {
-            std::lock_guard<std::mutex> lock(g_ServerMutex);
-            OfflineMode = true;
-            LauncherLog("Offline mode enabled. Server will not contact backend.");
-        }
-        else if (cmd.rfind("servername ", 0) == 0)
-        {
-            std::lock_guard<std::mutex> lock(g_ServerMutex);
-            ServerName = cmd.substr(11);
-            LauncherLog("Server name set to: " + ServerName);
-        }
-        else if (cmd.rfind("serverregion ", 0) == 0)
-        {
-            std::lock_guard<std::mutex> lock(g_ServerMutex);
-            ServerRegion = cmd.substr(13);
-            LauncherLog("Server region set to: " + ServerRegion);
-        }
-        else if (cmd.rfind("setport ", 0) == 0)
-        {
-            std::string portStr = cmd.substr(8);
-            try {
-                int newPort = std::stoi(portStr);
-                if (newPort < 1 || newPort > 65535) {
-                    LauncherLog("Invalid port. Must be 1-65535.");
-                }
-                else {
-                    std::lock_guard<std::mutex> lock(g_ServerMutex);
-                    g_ServerPort = newPort;
-                    LauncherLog("Server port set to: " + std::to_string(g_ServerPort));
-                }
-            }
-            catch (...) {
-                LauncherLog("Invalid port format.");
-            }
-        }
-        else if (cmd.rfind("setexternal ", 0) == 0)
-        {
-            std::string portStr = cmd.substr(12);
-            try {
-                int newPort = std::stoi(portStr);
-                if (newPort < 1 || newPort > 65535) {
-                    LauncherLog("Invalid external port. Must be 1-65535.");
-                }
-                else {
-                    std::lock_guard<std::mutex> lock(g_ServerMutex);
-                    g_ExternalPort = newPort;
-                    LauncherLog("External port set to: " + std::to_string(g_ExternalPort));
-                }
-            }
-            catch (...) {
-                LauncherLog("Invalid external port format.");
-            }
-        }
-        else
-        {
-            LauncherLog("Unknown command.");
-        }
-    }
-}
-
-//Random map picker as default
-std::string PickRandom(const std::vector<std::string>& list)
-{
-    static std::mt19937 rng(std::random_device{}());
-    std::uniform_int_distribution<> dist(0, list.size() - 1);
-    return list[dist(rng)];
-}
-
-void LauncherLog(const std::string& msg)
-{
-    std::string line = "[Launcher] " + msg;
-    std::lock_guard<std::mutex> lock(g_LogMutex);
-
-    logFile << line << std::endl;
-    logFile.flush();
-    std::cout << line << std::endl;
-}
+// ======================================================
+//  PROCESS I/O AND WATCHDOGS
+// ======================================================
 
 void PipeReader(HANDLE pipe, uint64_t generation)
 {
@@ -514,7 +588,6 @@ void PipeReader(HANDLE pipe, uint64_t generation)
         buffer[bytesRead] = '\0';
         std::string msg(buffer);
 
-        // Ignore heartbeats from stale process generations that may still be draining output during a restart.
         if (msg.find("[HEARTBEAT]") != std::string::npos && generation == g_ServerGeneration.load())
         {
             ResetHeartbeatClock();
@@ -536,7 +609,6 @@ void HideGameWindow(DWORD pid)
 {
     HWND hwnd = NULL;
 
-    // Find the window belonging to the server process
     while ((hwnd = FindWindowExW(NULL, hwnd, NULL, NULL)) != NULL)
     {
         DWORD windowPID = 0;
@@ -557,7 +629,7 @@ BOOL WINAPI ConsoleHandler(DWORD ctrlType)
     std::lock_guard<std::mutex> lock(g_ServerMutex);
     StopServerLocked();
 
-    return FALSE; // allow normal Ctrl+C behavior
+    return FALSE;
 }
 
 void StartWatchdog(HANDLE processHandle, uint64_t generation)
@@ -614,6 +686,10 @@ void StartExitWatcher(HANDLE processHandle, uint64_t generation)
         }).detach();
 }
 
+// ======================================================
+//  PORT CHECKING
+// ======================================================
+
 bool IsPortAvailable(int port, bool useTCP = false)
 {
     WSADATA wsa;
@@ -639,6 +715,11 @@ bool IsPortAvailable(int port, bool useTCP = false)
 
     return result != SOCKET_ERROR;
 }
+
+
+// ======================================================
+//  SERVER LAUNCHING
+// ======================================================
 
 bool LaunchServerLocked()
 {
@@ -754,8 +835,6 @@ bool LaunchServerLocked()
     g_ServerProcess = pi.hProcess;
     g_ServerPid = pi.dwProcessId;
 
-    // Publish the new generation before creating watcher threads so stale
-    // threads can detect they no longer belong to the active process.
     const uint64_t generation = g_ServerGeneration.fetch_add(1) + 1;
     ResetHeartbeatClock();
 
@@ -785,6 +864,11 @@ void LaunchServer()
     LaunchServerLocked();
 }
 
+
+// ======================================================
+//  MAIN ENTRY POINT
+// ======================================================
+
 int main()
 {
     std::string cmdLine = GetCommandLineA();
@@ -795,28 +879,24 @@ int main()
         std::string portStr = cmdLine.substr(pos, end - pos);
         g_ServerPort = std::stoi(portStr);
     }
-    // default external = server port
+
     g_ExternalPort = g_ServerPort;
     ResetHeartbeatClock();
     SetConsoleCtrlHandler(ConsoleHandler, TRUE);
 
-    // Create logs folder
     std::filesystem::create_directory("logs");
 
-    // Build timestamped log file
     std::string logPath = "logs/log-" + CurrentTimestamp() + ".txt";
     logFile.open(logPath, std::ios::app);
 
     LauncherLog("Logging to: " + logPath);
     LauncherLog("Wrapper started.");
 
-    // Start input thread (setmap, setmode, restart, killserver, etc.)
+    InitCommands();
     std::thread(InputThread).detach();
 
-    // Launch the server using CURRENT map + mode
     LaunchServer();
 
-    // Main thread just idles forever
     while (true)
     {
         Sleep(1000);
