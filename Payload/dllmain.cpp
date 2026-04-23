@@ -82,6 +82,10 @@ struct ServerConfig {
 //Central server ip
 std::string OnlineBackendAddress = "";
 
+//Room heartbeat credentials from the desktop browser/match server
+std::string HostRoomId = "";
+std::string HostToken = "";
+
 //IP from the server browser
 std::string MatchIP = "";
 
@@ -214,21 +218,71 @@ nlohmann::json BuildServerStatusPayload()
     return payload;
 }
 
+std::string StripHttpScheme(const std::string& backend)
+{
+    const std::string http = "http://";
+    const std::string https = "https://";
+
+    if (backend.rfind(http, 0) == 0)
+        return backend.substr(http.length());
+
+    if (backend.rfind(https, 0) == 0)
+        return backend.substr(https.length());
+
+    return backend;
+}
+
+nlohmann::json BuildRoomHeartbeatPayload()
+{
+    int playerCount = GetCurrentPlayerCount();
+    std::string state = "Unknown";
+
+    UWorld* World = UWorld::GetWorld();
+    if (World && World->AuthorityGameMode && World->AuthorityGameMode->GameState)
+    {
+        APBGameState* GS = (APBGameState*)World->AuthorityGameMode->GameState;
+        state = GS->RoundState.ToString();
+    }
+
+    nlohmann::json payload = {
+        { "hostToken",   HostToken },
+        { "playerCount", playerCount },
+        { "serverState", state }
+    };
+
+    return payload;
+}
+
 //Send Message to Backend HTTP Helper
 void SendServerStatus(const std::string& backend)
 {
-    nlohmann::json payload = BuildServerStatusPayload();
-    std::string body = payload.dump();
+    bool useRoomHeartbeat = !HostRoomId.empty() && !HostToken.empty();
+    nlohmann::json payload = useRoomHeartbeat ? BuildRoomHeartbeatPayload() : BuildServerStatusPayload();
+    if (!useRoomHeartbeat && !HostRoomId.empty())
+    {
+        payload["roomId"] = HostRoomId;
+        payload["hostToken"] = HostToken;
+    }
 
-    size_t colon = backend.find(':');
+    std::string body = payload.dump();
+    std::string cleanBackend = StripHttpScheme(backend);
+
+    size_t slash = cleanBackend.find('/');
+    if (slash != std::string::npos)
+        cleanBackend = cleanBackend.substr(0, slash);
+
+    size_t colon = cleanBackend.find(':');
     if (colon == std::string::npos)
     {
         std::cout << "[ONLINE] Invalid backend address format." << std::endl;
         return;
     }
 
-    std::string host = backend.substr(0, colon);
-    std::string port = backend.substr(colon + 1);
+    std::string host = cleanBackend.substr(0, colon);
+    std::string port = cleanBackend.substr(colon + 1);
+    std::string path = useRoomHeartbeat
+        ? "/v1/rooms/" + HostRoomId + "/heartbeat"
+        : "/server/status";
 
     HINTERNET hSession = WinHttpOpen(L"BoundaryDLL/1.0",
         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
@@ -251,7 +305,7 @@ void SendServerStatus(const std::string& backend)
     HINTERNET hRequest = WinHttpOpenRequest(
         hConnect,
         L"POST",
-        L"/server/status",
+        std::wstring(path.begin(), path.end()).c_str(),
         NULL,
         WINHTTP_NO_REFERER,
         WINHTTP_DEFAULT_ACCEPT_TYPES,
@@ -280,7 +334,7 @@ void SendServerStatus(const std::string& backend)
     WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
 
-    std::cout << "[ONLINE] Sent server status: " << body << std::endl;
+    std::cout << "[ONLINE] Sent " << path << ": " << body << std::endl;
 }
 
 // ======================================================
@@ -908,6 +962,20 @@ void LoadConfig()
     {
         OnlineBackendAddress = onlineArg;
         std::cout << "[SERVER] Online backend: " << OnlineBackendAddress << std::endl;
+    }
+
+    std::string roomIdArg = GetCmdValue("-roomid=");
+    if (!roomIdArg.empty())
+    {
+        HostRoomId = roomIdArg;
+        Log("[SERVER] Host room id: " + HostRoomId);
+    }
+
+    std::string hostTokenArg = GetCmdValue("-hosttoken=");
+    if (!hostTokenArg.empty())
+    {
+        HostToken = hostTokenArg;
+        Log("[SERVER] Host token received.");
     }
 }
 

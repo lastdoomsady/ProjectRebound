@@ -48,6 +48,9 @@ std::string CurrentDifficulty = "normal";
 std::string OnlineBackend = DEFAULT_BACKEND;
 std::string ServerName = "DefaultServer";
 std::string ServerRegion = "CN";
+std::string HostRoomId = "";
+std::string HostToken = "";
+std::string GameExePath = ".\\ProjectBoundarySteam-Win64-Shipping.exe";
 int g_ServerPort = 7777;
 int g_ExternalPort = g_ServerPort;
 bool OfflineMode = false;
@@ -57,6 +60,7 @@ bool UseDX11 = false;
 std::mutex g_ServerMutex;
 std::mutex g_LogMutex;
 std::atomic<bool> ServerRunning = false;
+std::atomic<bool> HeartbeatSeen = false;
 std::atomic<bool> g_WrapperShuttingDown = false;
 std::atomic<ServerState> g_ServerState{ ServerState::Stopped };
 std::atomic<uint64_t> g_ServerGeneration{ 0 };
@@ -64,6 +68,7 @@ std::atomic<int> g_ConsecutiveFailures{ 0 };
 std::atomic<uint64_t> g_LastHeartbeatTickMs{ 0 };
 
 std::chrono::steady_clock::time_point g_LastFailureTime;
+std::chrono::steady_clock::time_point g_ServerLaunchTime;
 const int MAX_FAILURES = 3;
 const auto FAILURE_RESET_WINDOW = std::chrono::minutes(1);
 
@@ -71,6 +76,8 @@ void LauncherLog(const std::string& msg);
 void LaunchServer();
 void RestartServer();
 void KillServer();
+std::string GetCmdValue(const std::string& key);
+void LoadCommandLineConfig();
 
 bool LaunchServerLocked();
 bool StopServerLocked();
@@ -640,7 +647,7 @@ void RequestRestart(bool rotateMap, const std::string& reason)
         MessageBoxA(NULL,
             "Server failed to restart repeatedly.\n"
             "Possible reasons:\n"
-            "- Current port is occupied by another program.\n"
+            "- The configured UDP port is occupied by another program.\n"
             "- Map file missing or corrupt.\n"
             "- Antivirus blocking the executable.\n\n"
             "Please check the logs and restart the launcher manually.",
@@ -687,9 +694,11 @@ void PipeReader(HANDLE pipe, uint64_t generation)
         buffer[bytesRead] = '\0';
         std::string msg(buffer);
 
+        // Detect heartbeat
         if (msg.find("[HEARTBEAT]") != std::string::npos && generation == g_ServerGeneration.load())
         {
             ResetHeartbeatClock();
+            HeartbeatSeen = true;
             g_ConsecutiveFailures = 0;
             LauncherLog("Heartbeat received");
         }
@@ -734,7 +743,8 @@ BOOL WINAPI ConsoleHandler(DWORD ctrlType)
 void StartWatchdog(HANDLE processHandle, uint64_t generation)
 {
     std::thread([processHandle, generation]() {
-        const auto timeout = std::chrono::seconds(60);
+        const auto startupTimeout = std::chrono::seconds(120);
+        const auto heartbeatTimeout = std::chrono::seconds(30);
 
         while (true)
         {
@@ -751,10 +761,13 @@ void StartWatchdog(HANDLE processHandle, uint64_t generation)
             if (!GetExitCodeProcess(processHandle, &code) || code != STILL_ACTIVE)
                 break;
 
-            if (HasHeartbeatTimedOut(timeout))
+            if (HasHeartbeatTimedOut(HeartbeatSeen ? heartbeatTimeout : startupTimeout))
             {
-                LauncherLog("Heartbeat timeout - server frozen.");
-                RequestRestart(true, "heartbeat timeout");
+                LauncherLog(HeartbeatSeen
+                    ? "Heartbeat timeout — server frozen."
+                    : "Startup timeout — server did not finish initialization.");
+
+                RequestRestart(true, HeartbeatSeen ? "heartbeat timeout" : "startup timeout");
                 break;
             }
 
@@ -843,6 +856,9 @@ bool LaunchServerLocked()
     g_ServerState.store(ServerState::Starting);
     ServerRunning.store(false);
     LauncherLog("Launching server process...");
+    HeartbeatSeen = false;
+    lastHeartbeatTime = std::chrono::steady_clock::now();
+    g_ServerLaunchTime = lastHeartbeatTime;
 
     SECURITY_ATTRIBUTES sa{ sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
     HANDLE readPipe = NULL;
@@ -888,8 +904,11 @@ bool LaunchServerLocked()
         modePath = "/Game/Online/GameMode/PBGameMode_Rush_BP.PBGameMode_Rush_BP_C";
     }
 
+    // Build command line
+    std::wstring wGameExe(GameExePath.begin(), GameExePath.end());
+
     std::wstring cmd =
-        L".\\ProjectBoundarySteam-Win64-Shipping.exe "
+        L"\"" + wGameExe + L"\" "
         L"-log -server -nullrhi "
         L"-map=" + std::wstring(CurrentMap.begin(), CurrentMap.end()) + L" "
         L"-mode=" + std::wstring(modePath.begin(), modePath.end()) + L" "
@@ -912,6 +931,18 @@ bool LaunchServerLocked()
         cmd += L"-online=" + wOnline + L" ";
     }
 
+    if (!HostRoomId.empty())
+    {
+        std::wstring wRoomId(HostRoomId.begin(), HostRoomId.end());
+        cmd += L"-roomid=" + wRoomId + L" ";
+    }
+
+    if (!HostToken.empty())
+    {
+        std::wstring wHostToken(HostToken.begin(), HostToken.end());
+        cmd += L"-hosttoken=" + wHostToken + L" ";
+    }
+
     if (!CreateProcessW(
         NULL,
         cmd.data(),
@@ -925,6 +956,7 @@ bool LaunchServerLocked()
         &pi))
     {
         LauncherLog("Failed to launch server! GetLastError=" + std::to_string(GetLastError()));
+        LauncherLog("Command line: " + std::string(cmd.begin(), cmd.end()));
         CloseHandle(readPipe);
         CloseHandle(writePipe);
         g_ServerState.store(ServerState::Stopped);
@@ -973,16 +1005,8 @@ void LaunchServer()
 
 int main()
 {
-    std::string cmdLine = GetCommandLineA();
-    size_t pos = cmdLine.find("-port=");
-    if (pos != std::string::npos) {
-        pos += 6;
-        size_t end = cmdLine.find(" ", pos);
-        std::string portStr = cmdLine.substr(pos, end - pos);
-        g_ServerPort = std::stoi(portStr);
-    }
-
-    g_ExternalPort = g_ServerPort;
+    ResetHeartbeatClock();
+    LoadCommandLineConfig();
     ResetHeartbeatClock();
     SetConsoleCtrlHandler(ConsoleHandler, TRUE);
 
@@ -993,6 +1017,8 @@ int main()
 
     LauncherLog("Logging to: " + logPath);
     LauncherLog("Wrapper started.");
+    LoadCommandLineConfig();
+    LauncherLog("Configured UDP port: " + std::to_string(g_ServerPort));
 
     if (!LoadConfigFile())
     {
@@ -1010,3 +1036,73 @@ int main()
         Sleep(1000);
     }
 }
+std::string GetCmdValue(const std::string& key)
+{
+    std::string cmd = GetCommandLineA();
+    size_t pos = cmd.find(key);
+    if (pos == std::string::npos)
+        return "";
+
+    pos += key.length();
+    size_t end = cmd.find(" ", pos);
+    if (end == std::string::npos)
+        end = cmd.length();
+
+    return cmd.substr(pos, end - pos);
+}
+
+void LoadCommandLineConfig()
+{
+    std::string portArg = GetCmdValue("-port=");
+    if (!portArg.empty())
+        g_ServerPort = std::stoi(portArg);
+
+    g_ExternalPort = g_ServerPort;
+
+    std::string mapArg = GetCmdValue("-map=");
+    if (!mapArg.empty())
+        SetMap(mapArg);
+
+    std::string modeArg = GetCmdValue("-mode=");
+    if (!modeArg.empty())
+    {
+        if (modeArg.find("PVE") != std::string::npos || modeArg.find("pve") != std::string::npos)
+            SetMode("pve");
+        else if (modeArg.find("PVP") != std::string::npos || modeArg.find("pvp") != std::string::npos)
+            SetMode("pvp");
+        else
+            SetMode(modeArg);
+    }
+
+    std::string difficultyArg = GetCmdValue("-difficulty=");
+    if (!difficultyArg.empty())
+        SetDifficulty(difficultyArg);
+
+    std::string serverNameArg = GetCmdValue("-servername=");
+    if (!serverNameArg.empty())
+        ServerName = serverNameArg;
+
+    std::string serverRegionArg = GetCmdValue("-serverregion=");
+    if (!serverRegionArg.empty())
+        ServerRegion = serverRegionArg;
+
+    std::string onlineArg = GetCmdValue("-online=");
+    if (!onlineArg.empty())
+    {
+        OnlineBackend = onlineArg;
+        OfflineMode = false;
+    }
+
+    std::string roomIdArg = GetCmdValue("-roomid=");
+    if (!roomIdArg.empty())
+        HostRoomId = roomIdArg;
+
+    std::string hostTokenArg = GetCmdValue("-hosttoken=");
+    if (!hostTokenArg.empty())
+        HostToken = hostTokenArg;
+
+    std::string gameExeArg = GetCmdValue("-gameexe=");
+    if (!gameExeArg.empty())
+        GameExePath = gameExeArg;
+}
+
