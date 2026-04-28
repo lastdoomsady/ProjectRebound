@@ -1,14 +1,95 @@
 // ======================================================
 //  SERVER STATUS PAGE (PLACEHOLDER)
 // ======================================================
-import { VerticalBox } from "std-widgets.slint";
-
+import { VerticalBox, HorizontalBox } from "std-widgets.slint";
+import {
+    Action,
+    DetailRow,
+    InfoBox,
+    InputBox,
+    NavTab,
+    OptionSwitch,
+    Panel,
+    TitleBlock,
+    TopSwitch,
+    Txt,
+    RoundButton,
+} from "components.slint";
 export component ServerStatusPage {
+    in property <string> status-map;
+    in property <string> status-mode;
+    in property <int> status-players;
+    in property <string> status-state;
+    in property <int> status-port;
+    in property <string> status-name;
+    in property <string> status-region;
+
     VerticalBox {
-        alignment: center;
-        Text {
-            text: "Server Status (Coming Soon)";
-            horizontal-alignment: center;
+        height: 200px;
+        padding: -50px;
+        spacing: 30px;
+        width: 300px;
+        InfoBox {
+            border-radius: 4px;
+            background: #0f131a61;
+            accent: #6279e2;
+            height: 60px;
+            label: "Map: ";
+            value: status-map;
+        }
+
+        InfoBox {
+            border-radius: 4px;
+            background: #0f131a61;
+            accent: #6279e2;
+            height: 60px;
+            label: "Mode: ";
+            value: status-mode;
+        }
+
+        InfoBox {
+            border-radius: 4px;
+            background: #0f131a61;
+            accent: #6279e2;
+            height: 60px;
+            label: "Players: ";
+            value: status-players;
+        }
+
+        InfoBox {
+            border-radius: 4px;
+            background: #0f131a61;
+            accent: #6279e2;
+            height: 60px;
+            label: "State: ";
+            value: status-state;
+        }
+
+        InfoBox {
+            border-radius: 4px;
+            background: #0f131a61;
+            accent: #6279e2;
+            height: 60px;
+            label: "Port: ";
+            value: status-port;
+        }
+
+        InfoBox {
+            border-radius: 4px;
+            background: #0f131a61;
+            accent: #6279e2;
+            height: 60px;
+            label: "Name: ";
+            value: status-name;
+        }
+
+        InfoBox {
+            border-radius: 4px;
+            background: #0f131a61;
+            accent: #6279e2;
+            height: 60px;
+            label: "Region: ";
+            value: status-region;
         }
     }
 }

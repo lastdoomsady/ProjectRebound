@@ -2,4 +2,17 @@ export global AppState {
     in-out property <string> console_text;
     in-out property <bool> auto-scroll: true;
     in-out property <int> log-length: 0;
+    in-out property <int> language: 0;
+    in property <bool> graphics-accelerator-available: true;
+    //ServerConfig
+    in-out property <string> server-map: "Warehouse";
+    in-out property <string> server-mode: "pvp";
+    in-out property <string> server-difficulty: "normal";
+    in-out property <string> server-name: "DefaultServer";
+    in-out property <string> server-region: "CN";
+    in-out property <string> server-port: "7777";
+    in-out property <string> server-external-port: "7777";
+    in-out property <string> server-backend: "ax48735790k.vicp.fun:3000";
+    in-out property <bool> server-offline: false;
+    in-out property <bool> server-dx11: false;
 }

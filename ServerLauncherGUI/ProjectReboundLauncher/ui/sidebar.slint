@@ -1,27 +1,36 @@
 import { VerticalBox } from "std-widgets.slint";
+import { GlassPanel } from "glass_panel.slint";
+import { Action, DetailRow, InfoBox, InputBox, NavTab, OptionSwitch, Panel, TitleBlock, TopSwitch, Txt, RoundButton } from "components.slint";
 
 export component SideBar {
     in property <[string]> model: [];
     out property <int> current-item: 0;
 
     VerticalBox {
-        padding: 10px;
-        spacing: 4px;
+        padding: -2px;
+        spacing: 15px;
 
-        for item[index] in root.model : Rectangle {
-            height: 30px;
+        for item[index] in root.model :  NavTab {
+            height: 40px;
+            width: 110px;
+
+            border-width: 2px;
+            border-radius: 4px;
 
             // 背景色状态切换（选中 / 悬停 / 默认）
-            background: index == root.current-item ? #5e84bd :
-                        touch.has-hover ? #485974 : transparent;
-            border-radius: 4px;
-            animate background { duration: 150ms; }
+            background: index == root.current-item ? #49669b :
+                        touch.has-hover ? #3f4e68b9 : transparent;
+            //border-radius: 4px;
+            animate background { duration: 100ms; }
 
             Text {
                 text: item;
+                color: #c7d1df;
+                font-size: 14px;
+                font-weight: 700;
                 vertical-alignment: center;
+                horizontal-alignment: center;
                 // 左边距通过 x 或 horizontal-alignment 实现，完全合法
-                x: 10px;
                 height: 100%;
             }
 

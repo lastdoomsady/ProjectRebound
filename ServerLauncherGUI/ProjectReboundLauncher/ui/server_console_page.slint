@@ -1,10 +1,32 @@
-import { TextEdit, LineEdit, Button, VerticalBox, HorizontalBox, CheckBox } from "std-widgets.slint";
+import {
+    TextEdit,
+    LineEdit,
+    Button,
+    VerticalBox,
+    HorizontalBox,
+    CheckBox,
+} from "std-widgets.slint";
 import { AppState } from "app_state.slint";
+import { GlassPanel } from "glass_panel.slint";
+import {
+    Action,
+    DetailRow,
+    InfoBox,
+    InputBox,
+    NavTab,
+    OptionSwitch,
+    Panel,
+    TitleBlock,
+    TopSwitch,
+    Txt,
+    RoundButton,
+} from "components.slint";
 
 export component ServerConsolePage {
     // 页面需要的回调（由主窗口提供）
     callback send_command(string);
     callback start_server();
+    callback restart_server();
 
     Timer {
         interval: 200ms;
@@ -18,29 +40,59 @@ export component ServerConsolePage {
 
     VerticalBox {
         spacing: 8px;
+        horizontal-stretch: 1;
         output := TextEdit {
             text: AppState.console_text;
             read-only: true;
             wrap: word-wrap;
         }
+
         HorizontalBox {
-            spacing: 8px; height: 40px;
+            spacing: 8px;
+            height: 40px;
             input := LineEdit {
-                placeholder-text: "Enter command...";
-                accepted => { root.send_command(input.text); input.text = ""; }
+                height: 30px;
+                placeholder-text: AppState.language == 0 ? "Enter command..." : "输入命令...";
+                accepted => {
+                    root.send_command(input.text);
+                    input.text = "";
+                }
             }
-            Button {
-                text: "Send";
-                clicked => { root.send_command(input.text); input.text = ""; }
+
+            RoundButton {
+                border-radius: 4px;
+                height: 30px;
+                width: 80px;
+                label: AppState.language == 0 ? "Send" : "发送";
+                clicked => {
+                    root.send_command(input.text);
+                    input.text = "";
+                }
             }
-            Button {
-                text: "Start Server";
-                clicked => { root.start_server(); }
+            RoundButton {
+                border-radius: 4px;
+                height: 30px;
+                width: 120px;
+                label: AppState.language == 0 ? "Restart Server" : "重启服务器";
+                clicked => {
+                    root.restart_server();
+                }
+            }
+            RoundButton {
+                border-radius: 4px;
+                height: 30px;
+                width: 120px;
+                label: AppState.language == 0 ? "Start Server" : "启动服务器";
+                clicked => {
+                    root.start_server();
+                }
             }
             auto-scroll-check := CheckBox {
-                text: "Auto-scroll";
+                text: AppState.language == 0 ? "Auto-scroll" : "自动滚动";
                 checked: AppState.auto-scroll;
-                toggled => { AppState.auto-scroll = !AppState.auto-scroll; }
+                toggled => {
+                    AppState.auto-scroll = !AppState.auto-scroll;
+                }
             }
         }
     }

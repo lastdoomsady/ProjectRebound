@@ -31,6 +31,8 @@
 
 using json = nlohmann::json;
 
+#pragma comment(lib, "ws2_32.lib")
+
 // Callback for main.cpp
 #include "headers/wrapper.h"
 static LogCallback g_ExternalLogCallback = nullptr;
@@ -40,7 +42,12 @@ void SetExternalLogCallback(LogCallback callback)
     g_ExternalLogCallback = callback;
 }
 
-#pragma comment(lib, "ws2_32.lib")
+//Callback for serverconfig
+static ConfigChangeCallback g_ConfigChangeCallback = nullptr;
+
+void SetConfigChangeCallback(ConfigChangeCallback callback) {
+    g_ConfigChangeCallback = callback;
+}
 
 enum class ServerState
 {
@@ -696,6 +703,11 @@ void SaveConfigFile()
     f << j.dump(4);
 
     LauncherLog("Saved configuration to serverconfig.json");
+    //Callback to UI
+    if (g_ConfigChangeCallback) 
+    {
+        g_ConfigChangeCallback();
+    }
 }
 // ======================================================
 //  SERVER LIFECYCLE
@@ -1166,7 +1178,11 @@ void InitWrapperCore()
         LauncherLog("No config found. Creating default serverconfig.json...");
         SaveConfigFile();
     }
-
+    //Callback Config to UI
+    if (g_ConfigChangeCallback) 
+    {
+        g_ConfigChangeCallback();
+    }
     InitCommands();
 }
 

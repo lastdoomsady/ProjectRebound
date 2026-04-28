@@ -4,19 +4,66 @@
 import { HorizontalBox, VerticalBox } from "std-widgets.slint";
 import { SideBar } from "sidebar.slint";
 import { AppState } from "app_state.slint";
-import { ServerConsolePage, ServerConfigPage, ServerStatusPage } from "pages.slint";
+import {
+    Action,
+    DetailRow,
+    InfoBox,
+    InputBox,
+    NavTab,
+    OptionSwitch,
+    Panel,
+    TitleBlock,
+    TopSwitch,
+    Txt,
+    RoundButton,
+} from "components.slint";
+import {
+    ServerConsolePage,
+    ServerConfigPage,
+    ServerStatusPage,
+} from "pages.slint";
+
+import { GlassPanel } from "glass_panel.slint";
 
 export component AppWindow inherits Window {
-    preferred-width: 1440px;     // 默认宽度，用户可拖拽
-    min-width: 900px;            // 避免窗口过窄
-    height: 600px;
+    //SetConfigCallback
+    callback load-config();
+    callback save-config();
+    //Bridge
+    in-out property <string> cfg-map <=> AppState.server-map;
+    in-out property <string> cfg-mode <=> AppState.server-mode;
+    in-out property <string> cfg-difficulty <=> AppState.server-difficulty;
+    in-out property <string> cfg-name <=> AppState.server-name;
+    in-out property <string> cfg-region <=> AppState.server-region;
+    in-out property <string> cfg-port <=> AppState.server-port;
+    in-out property <string> cfg-external-port <=> AppState.server-external-port;
+    in-out property <string> cfg-backend <=> AppState.server-backend;
+    in-out property <bool> cfg-offline <=> AppState.server-offline;
+    in-out property <bool> cfg-dx11 <=> AppState.server-dx11;
+
+    // Server status (updated from C++ when [ONLINE] status line appears)
+    in property <string> status-map: "";
+    in property <string> status-mode: "";
+    in property <int> status-players: 0;
+    in property <string> status-state: "Offline";
+    in property <int> status-port: 0;
+    in property <string> status-name: "";
+    in property <string> status-region: "";
+
+    preferred-width: 1600px;
+    min-width: 600px;
+    max-width: 1920px;
+    preferred-height: 900px;
+    min-height: 400px;
+    max-height: 1080px;
     icon: @image-url("servericon.png");
-    title: "Project Boundary Server Launcher";
+    title: AppState.language == 0 ? "Project Boundary Server Launcher" : "边境社区服开服器";
 
     callback get-new-log() -> string;
     callback get-log-length() -> int;
     callback send_command(string);
     callback start_server();
+    callback restart_server();
 
     Timer {
         interval: 200ms;
@@ -27,50 +74,108 @@ export component AppWindow inherits Window {
         }
     }
 
-    HorizontalBox {
-        spacing: 4px;                     // 防止边框粘连
+    // Root container with background image
+    Rectangle {
+        width: 100%;
+        height: 100%;
 
-        // ===== COLUMN 1: Fixed Sidebar =====
-        Rectangle {
-            width: 200px;
+        // Background image (drawn first)
+        Image {
+            source: @image-url("../resource/Background.png");
+            width: 100%;
             height: 100%;
-            border-width: 1px;
-            border-color: #87a4bed1;
-            border-radius: 4px;
+            image-fit: cover;   // fills without distortion
+        }
+        // Original three‑column layout (drawn on top)
+        HorizontalBox {
+            spacing: 4px; // 防止边框粘连
 
-            VerticalBox {
-                side-bar := SideBar {
-                    model: ["Server Config", "Server Status"];
+            // ===== COLUMN 1: Fixed Sidebar =====
+            Panel {
+                width: 120px;
+                height: 100%;
+                background: #42576e6a;
+                border-color: #87a4bed1;
+                border-radius: 4px;
+                radius: 12px;
+                // ---- 原有内容（不变） ----
+                VerticalBox {
+                    side-bar := SideBar {
+                        model: AppState.language == 0 ? ["Server Config", "Online Status"] : ["服务器配置", "在线状态"];
+                    }
+                }
+
+                // 语言按钮（保持你的百分比定位）
+            RoundButton {
+                    border-width: 2px;
+                    border-radius: 4px;
+                    background: #49669b;
+                    animate background { duration: 100ms; }
+                    height: 40px;
+                    width: 100px;
+                    horizontal-stretch: 0;
+                    label: AppState.language == 0 ? "中文" : "English";
+                    clicked => {
+                        AppState.language = Math.mod(AppState.language + 1, 2)
+                    };
+                    x: parent.width * 0.5 - self.width / 2;
+                    y: parent.height * 0.9 - self.height / 2 + 30px;
                 }
             }
-        }
 
-        // ===== COLUMN 2: Flexible Page Area =====
-        Rectangle {
-            horizontal-stretch: 1;        // 自动缩放，与右侧平分剩余宽度
-            height: 100%;
-            border-width: 1px;
-            border-color: #87a4bed1;
-            border-radius: 4px;
-
-            VerticalBox {
-                if (side-bar.current-item == 0): ServerConfigPage { }
-                if (side-bar.current-item == 1): ServerStatusPage { }
+            // ===== COLUMN 2: Flexible Page Area =====
+            Panel {
+                vertical-stretch: 1;
+                horizontal-stretch: 1;
+                min-width: 300px;
+                height: 100%;
+                background: #42576e6a;
+                border-color: #87a4bed1;
+                border-radius: 4px;
+                radius: 12px;
+                VerticalBox {
+                    if (side-bar.current-item == 0): ServerConfigPage {
+                        load-cfg => {
+                            root.load-config();
+                        }
+                        save-cfg => {
+                            root.save-config();
+                        }
+                    }
+                    if (side-bar.current-item == 1): ServerStatusPage {
+                        status-map: root.status-map;
+                        status-mode: root.status-mode;
+                        status-players: root.status-players;
+                        status-state: root.status-state;
+                        status-port: root.status-port;
+                        status-name: root.status-name;
+                        status-region: root.status-region;
+                    }
+                }
             }
-        }
 
-        // ===== COLUMN 3: Flexible Console =====
-        Rectangle {
-            horizontal-stretch: 1;        // 自动缩放，与中间平分剩余宽度
-            height: 100%;
-            border-width: 1px;
-            border-color: #87a4bed1;
-            border-radius: 4px;
+            // ===== COLUMN 3: Flexible Console =====
+            Panel {
+                vertical-stretch: 1;
+                horizontal-stretch: 1;        // 自动缩放，与中间平分剩余宽度
+                height: 100%;
+                border-width: 1px;
+                background: #42576e6a;
+                border-color: #87a4bed1;
+                border-radius: 4px;
 
-            VerticalBox {
-                ServerConsolePage {
-                    send_command(cmd) => { root.send_command(cmd); }
-                    start_server => { root.start_server(); }
+                VerticalBox {
+                    ServerConsolePage {
+                        send_command(cmd) => {
+                            root.send_command(cmd);
+                        }
+                        start_server => {
+                            root.start_server();
+                        }
+                        restart_server => {
+                            root.restart_server();
+                        }
+                    }
                 }
             }
         }

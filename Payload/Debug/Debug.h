@@ -1,4 +1,7 @@
 // Debug.h
+
+#ifndef DEBUG_H_STKDF
+#define DEBUG_H_STKDF
 #pragma once
 #include <string>
 #include <fstream>
@@ -19,3 +22,5 @@ void DebugDumpSubsystemsToFile();
 void DebugDumpWeaponPartsToFile();
 void HotkeyThread();
 void ClientAutoDumpThread();
+
+#endif //DEBUG_H_STKDF
