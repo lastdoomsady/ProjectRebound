@@ -86,6 +86,7 @@ std::atomic<bool> HeartbeatSeen = false;
 std::atomic<bool> g_WrapperShuttingDown = false;
 std::atomic<ServerState> g_ServerState{ServerState::Stopped};
 std::atomic<uint64_t> g_ServerGeneration{0};
+std::atomic<uint64_t> g_ExpectedExitGeneration{ 0 };
 std::atomic<int> g_ConsecutiveFailures{0};
 std::atomic<uint64_t> g_LastHeartbeatTickMs{0};
 
@@ -166,6 +167,8 @@ HANDLE DuplicateProcessHandle(HANDLE source)
                          DUPLICATE_SAME_ACCESS))
     {
         LauncherLog("DuplicateHandle failed. GetLastError=" + std::to_string(GetLastError()));
+        g_ServerState.store(ServerState::Running);
+        ServerRunning.store(true);
         return NULL;
     }
 
@@ -745,6 +748,8 @@ bool StopServerLocked()
     if (waitResult != WAIT_OBJECT_0)
     {
         LauncherLog("ERROR: timed out waiting for server process to exit.");
+        g_ServerState.store(ServerState::Running);
+        ServerRunning.store(true);
         return false;
     }
 
@@ -779,12 +784,20 @@ void RequestRestart(bool rotateMap, const std::string &reason)
         LauncherLog("Restart ignored: server lifecycle transition already in progress.");
         return;
     }
-
+    const bool expectedLifecycleRestart = reason == "match ended";
     auto now = std::chrono::steady_clock::now();
-    if (now - g_LastFailureTime < FAILURE_RESET_WINDOW)
+    if (expectedLifecycleRestart)
+    {
+        g_ConsecutiveFailures = 0;
+    }
+    else if (now - g_LastFailureTime < FAILURE_RESET_WINDOW)
+    {
         ++g_ConsecutiveFailures;
+    }
     else
+    {
         g_ConsecutiveFailures = 1;
+    }
     g_LastFailureTime = now;
 
     if (g_ConsecutiveFailures.load() >= MAX_FAILURES)
@@ -847,7 +860,11 @@ void PipeReader(HANDLE pipe, uint64_t generation)
             g_ConsecutiveFailures = 0;
             LauncherLog("Heartbeat received");
         }
-
+        if (msg.find("[SERVER_EXIT]") != std::string::npos && generation == g_ServerGeneration.load())
+        {
+            g_ExpectedExitGeneration.store(generation);
+            LauncherLog("Server reported expected lifecycle exit");
+        }
         std::lock_guard<std::mutex> lock(g_LogMutex);
         logFile << msg;
         logFile.flush();
@@ -933,6 +950,8 @@ void StartExitWatcher(HANDLE processHandle, uint64_t generation)
 {
     std::thread([processHandle, generation]() {
         WaitForSingleObject(processHandle, INFINITE);
+        DWORD exitCode = STILL_ACTIVE;
+        GetExitCodeProcess(processHandle, &exitCode);
         CloseHandle(processHandle);
 
         if (g_WrapperShuttingDown.load())
@@ -943,7 +962,12 @@ void StartExitWatcher(HANDLE processHandle, uint64_t generation)
 
         if (g_ServerState.load() != ServerState::Running)
             return;
-
+        if (g_ExpectedExitGeneration.load() == generation || (HeartbeatSeen && exitCode == 0))
+        {
+            LauncherLog("Server exited after match end.");
+            RequestRestart(true, "match ended");
+            return;
+        }
         LauncherLog("Server exited unexpectedly.");
         RequestRestart(true, "process exit");
     }).detach();
@@ -1009,6 +1033,7 @@ bool LaunchServerLocked()
     ServerRunning.store(false);
     LauncherLog("Launching server process...");
     HeartbeatSeen = false;
+    g_ExpectedExitGeneration.store(0);
     ResetHeartbeatClock(); // updates g_LastHeartbeatTickMs
     g_ServerLaunchTime = std::chrono::steady_clock::now();
 
